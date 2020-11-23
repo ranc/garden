@@ -45,7 +45,7 @@ int main(int argc, char *argv[])
             return 0;
         }
         if (0 == strcmp(argv[3], "print")) {
-            pGpio->override().clear();
+            pGpio->override().print();
             return 0;
         }
         if (!HAS_4_ARGS) return -1;

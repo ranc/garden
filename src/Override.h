@@ -29,7 +29,7 @@ public:
 
     void get_period(time_t &start, time_t &end, bool &is_on);
 
-    void print_override();
+    void print();
 
     bool check_override(bool &is_on);
 

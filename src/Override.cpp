@@ -51,7 +51,7 @@ void Override::get_period(time_t &start, time_t &end, bool &is_on) {
     end = start+min*60;
 }
 
-void Override::print_override() {
+void Override::print() {
     if (!is_exist())
     {
         std::cout << "0" << std::endl;
