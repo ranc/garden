@@ -6,10 +6,13 @@
 #define GARDEN_GPIOCTRL_H
 
 #include "Override.h"
+#include "Scheduler.h"
 
 class GPIOCtrl {
     std::string _gpioCtrlFilename;
     Override _override;
+    std::vector<SchedEntry> _schedule;
+
 public:
     explicit GPIOCtrl(int gpioIndex);
 
@@ -20,12 +23,8 @@ public:
     void check();
 
     Override &override() { return _override;}
-};
 
-struct day_entry_t {
-    int day;
-    int start_min;
-    int end_min;
+    void setSched(const std::vector<SchedEntry> &entry);
 };
 
 #endif //GARDEN_GPIOCTRL_H

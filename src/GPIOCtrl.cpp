@@ -20,7 +20,7 @@ GPIOCtrl::GPIOCtrl(int gpioIndex):_override(gpioIndex) {
 }
 
 void GPIOCtrl::turn(bool is_on) {
-    fstr fs(_gpioCtrlFilename,  std::fstream::out);
+    FileStream fs(_gpioCtrlFilename, std::fstream::out);
     fs << (is_on ? "0": "1");
     fs.close();
 }
@@ -36,8 +36,12 @@ void GPIOCtrl::check() {
 }
 
 bool GPIOCtrl::stat() {
-    fstr fs(_gpioCtrlFilename,  std::fstream::in);
+    FileStream fs(_gpioCtrlFilename, std::fstream::in);
     char c;
     fs >> c;
     return c=='0';
+}
+
+void GPIOCtrl::setSched(const std::vector<SchedEntry> &entry) {
+    _schedule = entry;
 }

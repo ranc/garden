@@ -1,5 +1,7 @@
 #include <iostream>
+#include <cassert>
 #include "GPIOCtrl.h"
+#include "Scheduler.h"
 
 #define HAS_2_ARGS (argc > 2)
 #define HAS_3_ARGS (argc > 3)
@@ -36,8 +38,22 @@ int main(int argc, char *argv[])
     }
     if (0 == strcmp(argv[1], "check")) {
         // read gpioDB
-        check();
+        Scheduler sched;
+        GPIOCtrl *gpio[8]= {nullptr};
+        for (int i : sched.getGPIOList())
+        {
+            assert((i>=1 && i<=8) && "GPIO must be 1 to 8");
+            if (gpio[i-1] == nullptr) gpio[i]=new GPIOCtrl(i);
+            gpio[i-1]->setSched(sched.getSchedule(i));
+        }
+        for (int i=1; i<9; i++)
+        {
+            if (gpio[i]!=nullptr)
+                gpio[i]->check();
+        }
+        return 0;
     }
+
     if (0 == strcmp(argv[1], "override") && pGpio!=nullptr) { // override <gpio> <min | clear | print> <1=on/0=off>
         if (!HAS_3_ARGS) return -1;
         if (0 == strcmp(argv[3], "clear")) {

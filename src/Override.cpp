@@ -34,14 +34,14 @@ void Override::clear() {
 }
 
 void Override::set(int min, bool is_on) {
-    fstr fs(_overrideFileName,  std::fstream::out);
+    FileStream fs(_overrideFileName, std::fstream::out);
     fs << min << " " << is_on << std::endl;
 }
 
 void Override::get_period(time_t &start, time_t &end, bool &is_on) {
 
     fs::file_time_type ftime = fs::last_write_time(_overrideFileName);
-    fstr fs(_overrideFileName, std::fstream::in);
+    FileStream fs(_overrideFileName, std::fstream::in);
 
     start = ftime.time_since_epoch().count();
     int min=0;
