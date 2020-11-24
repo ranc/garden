@@ -17,22 +17,33 @@ GPIOCtrl::GPIOCtrl(int gpioIndex):_override(gpioIndex) {
     std::ostringstream stst;
     stst << GPIO << gpio_port <<"/value";
     _gpioCtrlFilename = stst.str();
+    _gpioIndex = gpioIndex;
 }
 
 void GPIOCtrl::turn(bool is_on) {
+    LOG(("about to turn %d %s\n", _gpioIndex, ONOFF(is_on)));
     FileStream fs(_gpioCtrlFilename, std::fstream::out);
     fs << (is_on ? "0": "1");
     fs.close();
 }
 
-void GPIOCtrl::check() {
+void GPIOCtrl::check(int today, int now_min) {
     bool is_on=false;
     if (_override.check_override(is_on))
     {
+        LOG(("override is active to %s\n", is_on ? "ON" : "OFF"));
         turn(is_on);
         return;
     }
-
+    for (const auto &se : _schedule)
+    {
+        if (se.in_range(today, now_min))
+        {
+            turn(on);
+            return;
+        }
+    }
+    turn(off);
 }
 
 bool GPIOCtrl::stat() {

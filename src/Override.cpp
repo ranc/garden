@@ -72,7 +72,7 @@ bool Override::check_override(bool &is_on) {
     time (&now);
     if (start<=now && now < end)
     {
-        LOG(("override is %d for %d sec\n", is_on, end-start));
+        LOG(("override is %d for %lld sec\n", is_on, end-start));
         return true;
     }
     LOG(("out of override period, clearing entry.\n"));

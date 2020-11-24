@@ -5,9 +5,17 @@
 #ifndef GARDEN_FILE_H
 #define GARDEN_FILE_H
 
-#include <fstream>
 #include <string>
+#include <iostream>
+#include <fstream>
+#include <sstream>
 #include <vector>
+#include <ctime>
+
+#define on true
+#define off false
+
+#define ONOFF(b) ((b)?"ON":"OFF")
 
 class ThrowCatcher
 {
@@ -22,6 +30,11 @@ public:
 };
 
 #define Throw ThrowCatcher th; th.st()
+#ifdef _DEBUG
+#define DbgThrow std::cerr
+#else
+#define DbgThrow ThrowCatcher th; th.st()
+#endif
 
 // trim from start (in place)
 static inline void ltrim(std::string &s) {
@@ -71,6 +84,18 @@ static inline int strtime_to_min(const std::string &str)
     return atoi(hour_min[0].c_str())*60+atoi(hour_min[1].c_str());
 }
 
+static inline tm get_current_time()
+{
+    time_t now_sec;
+    time ( &now_sec );
+    tm ti{};
+#if _MSC_VER >=1400
+    localtime_s(&ti, &now_sec);
+    return ti;
+#else
+    return *localtime(&now_sec);
+#endif
+}
 
 class FileStream: public std::fstream
 {

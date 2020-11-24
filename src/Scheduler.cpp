@@ -7,7 +7,11 @@
 #include "Scheduler.h"
 #include "file.h"
 
-#define SCHEDULER_DATABASE "/home/pi/garder_schedule."
+#ifdef WIN32
+#define SCHEDULER_DATABASE "c:\\temp\\garden_schedule.txt"
+#else
+#define SCHEDULER_DATABASE "/home/pi/garder_schedule.txt"
+#endif
 
 /* DB file:
  * each line is in the form of : <list of gpio's, CSV>: <list of day's, CSV> : hh:mm - hh:mm
@@ -26,7 +30,7 @@ Scheduler::Scheduler() {
         line = trim(line);
         if (line[0]=='#') continue;
         // parse the three main sections delimited by ':'
-        auto args = explode(line, ':');
+        auto args = explode(line, ';');
         if (args.size()!=3)
         {
            Throw << "line " << lineNo << " is not in the right syntax, expecting 3 values with ':' delimiter";

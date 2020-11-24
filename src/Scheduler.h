@@ -12,6 +12,12 @@ struct SchedEntry {
     int day;
     int start_min;
     int end_min;
+
+    [[nodiscard]] inline bool in_range(int today, int now_min) const
+    {
+        if (today != day) return false;
+        return start_min <= now_min && now_min < end_min;
+    }
 };
 
 class Scheduler {

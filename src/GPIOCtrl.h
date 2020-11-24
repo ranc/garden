@@ -12,6 +12,7 @@ class GPIOCtrl {
     std::string _gpioCtrlFilename;
     Override _override;
     std::vector<SchedEntry> _schedule;
+    int _gpioIndex;
 
 public:
     explicit GPIOCtrl(int gpioIndex);
@@ -20,7 +21,7 @@ public:
 
     void turn(bool is_on);
 
-    void check();
+    void check(int today, int now_min);
 
     Override &override() { return _override;}
 
