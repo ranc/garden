@@ -11,6 +11,7 @@
 #include <sstream>
 #include <vector>
 #include <ctime>
+#include <algorithm>
 
 #define on true
 #define off false

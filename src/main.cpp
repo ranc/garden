@@ -1,5 +1,7 @@
 #include <iostream>
 #include <cassert>
+#include <cstring>
+
 #include "GPIOCtrl.h"
 #include "Scheduler.h"
 #include "file.h"
