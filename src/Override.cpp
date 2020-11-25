@@ -13,8 +13,6 @@
 #endif
 
 
-namespace fs = std::filesystem;
-
 Override::Override(int gpioIndex) {
     std::ostringstream stst;
     stst << OVERIDE_BASE_FILENAME << gpioIndex;
