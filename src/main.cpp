@@ -16,7 +16,7 @@ int main(int argc, char *argv[])
         if (argc < 2 || 0 == strcmp(argv[1], "stat")) {
             for (int i = 0; i < 8; i++) {
                 auto *pGpio = new GPIOCtrl(i + 1);
-                std::cout << (i + 1) << ": " << (pGpio->stat() ? "on" : "off");
+                std::cout << (i + 1) << ": " << (pGpio->stat() ? "on" : "off") << std::endl;
             }
             return 0;
         }

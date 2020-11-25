@@ -21,7 +21,7 @@ GPIOCtrl::GPIOCtrl(int gpioIndex):_override(gpioIndex) {
 }
 
 void GPIOCtrl::turn(bool is_on) {
-    LOG(("about to turn %d %s\n", _gpioIndex, ONOFF(is_on)));
+    LOG(("about to turn %d %s, to file: %s\n", _gpioIndex, ONOFF(is_on), _gpioCtrlFilename.c_str()));
     FileStream fs(_gpioCtrlFilename, std::fstream::out);
     fs << (is_on ? "0": "1");
     fs.close();

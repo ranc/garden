@@ -28,7 +28,7 @@ Scheduler::Scheduler() {
     {
         lineNo++;
         line = trim(line);
-        if (line[0]=='#') continue;
+        if (line.length()==0 || line[0]=='#') continue;
         // parse the three main sections delimited by ':'
         auto args = explode(line, ';');
         if (args.size()!=3)
