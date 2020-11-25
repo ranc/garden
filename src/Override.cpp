@@ -2,8 +2,8 @@
 // Created by rancohen on 22/11/2020.
 //
 #include <sstream>
-#include <filesystem>
 #include <iostream>
+#include <sys/stat.h>
 
 #include "Override.h"
 #include "file.h"
@@ -39,11 +39,11 @@ void Override::set(int min, bool is_on) {
 }
 
 void Override::get_period(time_t &start, time_t &end, bool &is_on) {
+    struct stat st;
 
-    fs::file_time_type ftime = fs::last_write_time(_overrideFileName);
+    stat(_overrideFileName.c_str(), &st);    
     FileStream fs(_overrideFileName, std::fstream::in);
-
-    start = ftime.time_since_epoch().count();
+    start = st.st_mtime;
     int min=0;
     is_on=0;
     fs >> min;

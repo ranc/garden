@@ -4,7 +4,7 @@ project(Garden)
 
 set(CMAKE_CXX_STANDARD 17)
 #set(CMAKE_CXX_FLAGS "-lstdc++fs")
-set(CMAKE_EXE_LINKER_FLAGS "-lstdc++fs")
+#set(CMAKE_EXE_LINKER_FLAGS "-lstdc++fs")
 
 file(GLOB GardenSource "src/*.cpp")
 
