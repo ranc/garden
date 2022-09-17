@@ -1,0 +1,74 @@
+<html>
+<head>
+  <link rel="stylesheet" href="//code.jquery.com/ui/1.10.4/themes/smoothness/jquery-ui.css">
+  <script src="//code.jquery.com/jquery-1.9.1.js"></script>
+  <script src="//code.jquery.com/ui/1.10.4/jquery-ui.js"></script>
+</head>
+<script>
+var seqno = 1;
+var stop=1;
+var skip_step=1;
+function PlayImg()
+{
+
+var oReq = new XMLHttpRequest();
+oReq.open("get", "/cam/image-"+seqno+".txt", false);
+oReq.send();
+if (oReq.status>=400)
+{
+	seqno=1;
+	window.setTimeout("PlayImg();", 100);
+	return;
+}
+	var img = document.createElement("img");
+	img.onload = function () {
+			var div = document.getElementById("image");
+			while (div.childNodes.length > 0)
+				div.removeChild(div.childNodes[0]);
+			div.appendChild(img);
+			var divnum = document.getElementById("numb");
+			divnum.innerHTML=seqno+"  "+oReq.responseText;
+
+			
+			seqno = seqno +skip_step;
+			$( "#slider" ).slider("value",seqno);
+
+			if (stop) return;
+			window.setTimeout(PlayImg, 50);
+	}
+        img.onerror = function () {
+			window.setTimeout("PlayImg();", 100);
+	}
+	img.src = "/cam/image-"+seqno+".jpg";
+}
+//PlayImg();
+$(function() {
+    $( "#slider" ).slider({min:1, max:10000,
+change: function( event, ui ) {
+console.log(event);
+if (!event.originalEvent) return;
+seqno=ui.value;
+stop=1; PlayImg();
+},
+slide: function( event, ui ) {
+//console.log("s:"+ui.value);
+$('#slider_val').text(ui.value);
+}
+});
+$('#step').slider({min:1, max:100, orientation: "vertical", slide: function (ev, ui) { skip_step=ui.value;}});
+    PlayImg();
+  });
+</script>
+<body>
+<span onclick="stop=1;">Stop</span>&nbsp;|&nbsp;
+<span onclick="stop=0; PlayImg();">Play</span>&nbsp;|&nbsp;
+<span onclick="stop=1; PlayImg();">Next</span>&nbsp;|&nbsp;
+<span onclick="stop=1; seqno=seqno-2*skip_step; PlayImg();">Prev</span>
+<hr/>
+<table><tr><td>
+<div id="image"></div></td><td>
+<div id="step" style="height: 480px"></div></td></tr></table>
+<div id="numb"></div>
+<div id="slider"></div>
+<div id="slider_val"></div>
+</body>
