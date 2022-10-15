@@ -1,158 +1,64 @@
-import logging
 import os
-import errno
-import socket
+from symbol import pass_stmt
 from telnetlib import SE
 import threading
+import time
 
-path = "/home/pi/pipe"
-gpio_map=(18,27,22,23,24,25,4,2)
+from server import Server
 
-def setup(gpio:int):
-    if os.name == 'nt':
-        print("setting gpio")
-        return
-    gpiofile = f"/sys/class/gpio/export"
-    with open(gpiofile, "w") as f:
-        f.write(str(gpio_map[gpio]))
-    gpiofile = f"/sys/class/gpio/gpio{gpio_map[gpio]}/direction"
-    with open(gpiofile, "w") as f:
-        f.write("out")
+if os.name == 'nt':
+    from gpio_nt import turn, setup
+    cfg_path = "test.cfg"
+else:
+    from gpio_linux import turn, setup
+    cfg_path = "/home/pi/garden_sched.cfg"
 
+''' strcuture of GPIO:
+    GPIO 0: main power driver for changing valves, turns on when a valve need to change state
+    GPIO n: the command for valve *n*, on: to turn on, off: to turn off.
+        For Example:
+            if at time *t* we need to turn on valve 2, while other valve 1 should still be on and valve 3 needs to be off, then:
+                1. we setup:
+                    gpio 1: on
+                    gpio 2: on
+                    gpio 3: off
+                2. we turn on gpio 0 to drive change (only gpio 2 will change)
+                3. wait for 1 sec for change to take effect
+                4. we turn off gpio 0, and then all other gpio to save power.
 
-def turn(gpio:int, is_on: bool):
-    gpiofile = f"/sys/class/gpio/gpio{gpio_map[gpio]}/value"
-    if os.name == 'nt':
-        print("setting gpio:", gpiofile, is_on)
-        return
-    if not os.path.exists(gpiofile):
-        print("setting gpio", gpio_map[gpio])
-        setup(gpio)
-    with open(gpiofile, "w") as f:
-        f.write('0' if is_on else '1')
+'''
 
-
-COMMANDS = {
-    'on': lambda args : turn(0, True),
-    'off': lambda args: turn(0, False),
-    'get': lambda args: ','.join(args)
-}
-
-class ClientAgent(threading.Thread):            
-    client_id_count = 0
-    def __init__(self, conn: socket.socket, server: 'Server'):
+class ValveMonitor(threading.Thread):
+    def __init__(self) -> None:
         super().__init__()
-        ClientAgent.client_id_count += 1
-        self.conn = conn
-        self.server = server
-        self.id = ClientAgent.client_id_count
-        self.logger = logging.getLogger('agent')
-        self.logger.debug(f"Agent {self.id} created")
-        print("new agent")
+        with open(cfg_path, "r") as f:
+            for line in f:
+                # Structure of config file: <value #> <day 0: all days, 1-7 specific day> <time 24 hours hh:mm or hh:mm:ss> <on duration in seconds>
+                valve, day, start_time, period = line.split()[:4]
+                print(valve, day, start_time, period)
 
-    def exec(self, inp: str) -> bool:
-        print(f"got: '{inp}'")
-        r = str(inp).split()
-        if len(r)==0:
-            self.conn.sendall("\n".encode('utf-8'))
-            return
-        cmd = r[0]
-        args = r[1:]
-        if cmd == "Close" or cmd == "DummyClose":
-            self.conn.close()
-            return False
-        if cmd == "StopServer":
-            self.conn.close()
-            self.server.stop_server()
-            return False
-        
-        print("got command:", cmd, args)
-        if cmd in COMMANDS:
-            res = COMMANDS[cmd](args)
-            if res:
-                res += "\n"
-            else:
-                res = "\n"
-            self.conn.sendall(res.encode('utf-8'))
-        else:
-            self.conn.sendall(f"Command {cmd} is not supported.".encode('utf-8'))
-        return True
+        self.work = True
 
     def run(self):
-        self.logger.info(f"Proccesing requests from: {self.id}")
-        try:
-            inp=""
-            stop = False
-            while not stop:
-                data = self.conn.recv(4096)
-                if len(data)==0:
-                    break
-                try:
-                    recv = data.decode("utf-8")
-                except UnicodeDecodeError:
-                    print("not a unicode:", data)
-                    continue
-                
-                bar = recv.find('\n')
-                while bar>=0:                    
-                    cmd = inp+recv[:bar]                    
-                    if not self.exec(cmd):
-                        stop = True
-                        break
-                    inp = ""
-                    recv = recv[bar+1:]
-                    bar = recv.find('\n')
-                inp = inp + recv
-                
-            print("Agent done...")
+        while self.work:
+            self.check(time.localtime(time.time()))
+            time.sleep(1)
 
-        except EOFError:
-            self.logger.warning(f"Client {self.id} misbehaved and did not close nicely")
-            self.conn.close()
-            return
 
-HOST = '127.0.0.1'  
-PORT = 5555    
+    def check(self, now: time.struct_time):        
+        # tm_wday     range [0, 6], Monday is 0, Sunday is 6
+        my_week_day = 1 + ((now.tm_wday + 1) % 7) # Sunday is 1, Monday is 2, Saturday is 7        
+        pass
 
-class Client(socket.socket):
-    def __init__(self) -> None:
-        super().__init__(socket.AF_INET, socket.SOCK_STREAM)
-        self.connect((HOST, PORT))
-
-class Server:
-    def __init__(self) -> None:                
-        self.stop = False
-        self.logger = logging.getLogger('server')
-        
-    def wait_for_clients(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind((HOST, PORT))
-            s.listen()
-            while not self.stop:
-                print("waiting for new clients...")
-                try:
-                    conn, addr = s.accept()
-                    ClientAgent(conn, self).start()
-                except OSError:
-                    break
-                except KeyboardInterrupt:
-                    print("Got Ctrl-C")
-                    self.stop = True
-                    break
-            print("Server is closing...")
-
-    def stop_server(self):
-        self.logger.info("Request to stop server...")
-        self.stop = True        
-        # this is a hack, it works but ugly
-        # self.listener._listener._socket.shutdown(SHUT_RDWR)
-        with Client() as conn:
-            # just wake the accept to catch the stop
-            conn.send('DummyClose'.encode('utf-8'))
 
 if __name__ == "__main__":
     setup(0)
-    srv = Server()
+    COMMANDS = {
+        'on': lambda args : turn(0, True),
+        'off': lambda args: turn(0, False),
+        'get': lambda args: ','.join(args)
+    }
+    srv = Server(COMMANDS)
     srv.wait_for_clients()
     
 
