@@ -1,8 +1,7 @@
 import os
-from symbol import pass_stmt
-from telnetlib import SE
 import threading
 import time
+from typing import Tuple
 
 from server import Server
 
@@ -28,14 +27,76 @@ else:
 
 '''
 
+class ValveSchedData:
+    valve_no: int # 1-7
+    sched_day: int # 0 - all day, 1-Sunday, 7- Saturday
+    start_time: int # seconds since midnight
+    duration: int # seconds
+
+    def __str__(self) -> str:
+        return f"valve #: {self.valve_no}"
+
+    def set_start_time(self, start_time_str: str) -> bool:
+        '''
+            returns false if the format is illegal
+        '''
+        h_m_s = start_time_str.split(':')
+        if len(h_m_s)<2 or len(h_m_s)>3:
+            return False
+        if len(h_m_s)==2:
+            h_m_s.append(0) # assume 0 sec if just HH:mm
+        h,m,s = tuple(int(_) for _ in h_m_s)
+        if h<0 or h>23 or m<0 or m>59 or s<0 or s>29:
+            return False
+        m += h*60
+        s += m*60
+        self.start_time = s
+        return True
+
+    def check_if_on(self, wday, day_sec) -> bool:
+        if self.sched_day > 0 and wday != self.sched_day:
+            return False # not today :-)
+        return self.start_time <= day_sec and day_sec <= self.start_time + self.duration            
+
+
 class ValveMonitor(threading.Thread):
     def __init__(self) -> None:
         super().__init__()
+        self.valves_state = [False]*8 # 0 is dummy        
+        self.schedule = []
         with open(cfg_path, "r") as f:
+            row = 0
             for line in f:
-                # Structure of config file: <value #> <day 0: all days, 1-7 specific day> <time 24 hours hh:mm or hh:mm:ss> <on duration in seconds>
-                valve, day, start_time, period = line.split()[:4]
-                print(valve, day, start_time, period)
+                row += 1
+                line = list.strip()
+                if len(line)==0:
+                    continue
+                if line[0]=="#":
+                    continue
+                # Structure of config file: <value #> <list(day 0: all days, 1-7 specific day)> <time 24 hours hh:mm or hh:mm:ss> <on duration in seconds>
+                valve, day_list, start_time, duration = line.split()[:4]
+                for day in day_list.split(","):
+                    iday = int(day)
+                    if iday<0 or iday>7:
+                        print(f"day {day} is illegal in row {row}")
+                        continue
+                    iduration = int(duration)
+                    if iduration<1:
+                        print(f"duration {duration} is less than 1 sec in row {row}")
+                        continue
+                    ivalve = int(valve)
+                    if ivalve<1 or ivalve>7:
+                        print(f"Got value {valve} but valve must be 1 to 7 in row {row}")
+                        continue
+                    sched = ValveSchedData()
+                    sched.valve_no = ivalve
+                    sched.sched_day = iday
+                    sched.duration = iduration
+                    if not sched.set_start_time(start_time):
+                        print(f"Start Time {start_time} is illegal in row {row}")
+                        del sched
+                        continue
+                    self.schedule.append(sched)
 
         self.work = True
 
@@ -47,7 +108,9 @@ class ValveMonitor(threading.Thread):
 
     def check(self, now: time.struct_time):        
         # tm_wday     range [0, 6], Monday is 0, Sunday is 6
-        my_week_day = 1 + ((now.tm_wday + 1) % 7) # Sunday is 1, Monday is 2, Saturday is 7        
+        my_week_day = 1 + ((now.tm_wday + 1) % 7) # Sunday is 1, Monday is 2, Saturday is 7
+        sec_since_midnight = (now.tm_hour*60 + now.tm_min)*60 + now.tm_sec
+        
         pass
 
 
