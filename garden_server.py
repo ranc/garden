@@ -1,7 +1,8 @@
+import logging
 import os
 import threading
 import time
-from typing import Tuple
+from typing import List, Tuple
 
 from server import Server
 
@@ -60,15 +61,28 @@ class ValveSchedData:
 
 
 class ValveMonitor(threading.Thread):
+    valves_state: List[bool]
+    schedule: List[ValveSchedData]
+    
     def __init__(self) -> None:
         super().__init__()
-        self.valves_state = [False]*8 # 0 is dummy        
         self.schedule = []
-        with open(cfg_path, "r") as f:
+        self.valves_state = []
+        self.cfg_path = cfg_path
+        self.lastmtime = os.path.getmtime(cfg_path)
+        self.valves_state = [False]*8 # 0 is dummy     
+        self.keepalive_count = 0
+        self.last_live_time = time.perf_counter()
+        self.configure()
+        self.work = True
+
+    def configure(self):        
+        self.schedule = []
+        with open(self.cfg_path, "r") as f:
             row = 0
             for line in f:
-                row += 1
-                line = list.strip()
+                row += 1               
+                line = line.strip()
                 if len(line)==0:
                     continue
                 if line[0]=="#":
@@ -79,15 +93,15 @@ class ValveMonitor(threading.Thread):
                     iday = int(day)
                     if iday<0 or iday>7:
                         print(f"day {day} is illegal in row {row}")
-                        continue
+                        break
                     iduration = int(duration)
                     if iduration<1:
                         print(f"duration {duration} is less than 1 sec in row {row}")
-                        continue
+                        break
                     ivalve = int(valve)
                     if ivalve<1 or ivalve>7:
                         print(f"Got value {valve} but valve must be 1 to 7 in row {row}")
-                        continue
+                        break
                     sched = ValveSchedData()
                     sched.valve_no = ivalve
                     sched.sched_day = iday
@@ -95,33 +109,93 @@ class ValveMonitor(threading.Thread):
                     if not sched.set_start_time(start_time):
                         print(f"Start Time {start_time} is illegal in row {row}")
                         del sched
-                        continue
-                    self.schedule.append(sched)
-
-        self.work = True
+                        break
+                    self.schedule.append(sched)                   
 
     def run(self):
         while self.work:
-            self.check(time.localtime(time.time()))
+            self.keepalive_count += 1
+            self.last_live_time = time.perf_counter()
+            lastmtime = os.path.getmtime(self.cfg_path)
+            if lastmtime != self.lastmtime:
+                self.lastmtime = lastmtime                
+                self.configure()
+            try:
+                self.check(time.localtime(time.time()))
+            except Exception as e:
+                print(f"Error {e}, retrying...")
             time.sleep(1)
 
+    def status(self):
+        return time.perf_counter()-self.last_live_time, self.keepalive_count
+    
+    def stop(self):
+        self.work = False
+        self.join()
 
     def check(self, now: time.struct_time):        
         # tm_wday     range [0, 6], Monday is 0, Sunday is 6
         my_week_day = 1 + ((now.tm_wday + 1) % 7) # Sunday is 1, Monday is 2, Saturday is 7
         sec_since_midnight = (now.tm_hour*60 + now.tm_min)*60 + now.tm_sec
+        #print("check:", my_week_day, sec_since_midnight)
+        valves_changed = False
+        for sched in self.schedule:
+            is_on = sched.check_if_on(my_week_day, sec_since_midnight)
+            if is_on != self.valves_state[sched.valve_no]:
+                # we need to drive change
+                self.valves_state[sched.valve_no] = is_on
+                valves_changed = True
         
-        pass
+        if valves_changed:
+            self.change_valves()
+
+    
+    def change_valves(self):
+        '''
+         if at time *t* we need to turn on valve 2, while other valve 1 should still be on and valve 3 needs to be off, then:
+                1. we setup:
+                    gpio 1: on
+                    gpio 2: on
+                    gpio 3: off
+                2. we turn on gpio 0 to drive change (only gpio 2 will change)
+                3. wait for 1 sec for change to take effect
+                4. we turn off gpio 0, and then all other gpio to save power.
+        '''
+        for v,s in enumerate(self.valves_state):
+            if v==0:
+                continue
+            turn(v,s)
+        turn(0, True)  # drive the change (an all valves, but just the new state will change)
+        time.sleep(1)
+        # turn off everything, starting with 0
+        for v in range(len(self.valves_state)):
+            turn(v, False)
+
+
+def set_logging():
+    from logging import handlers
+    handler = handlers.RotatingFileHandler('garden.log', maxBytes=20000, backupCount=3)
+    formatter = logging.Formatter('%(asctime)s %(levelname)-10.10s [%(name)-15.15s]: %(message)s')
+    handler.setFormatter(formatter)
+    logging.basicConfig(handlers=[handler], force=True)
+    logging.getLogger().setLevel(logging.INFO)
 
 
 if __name__ == "__main__":
-    setup(0)
+    set_logging()
+    for g in range(8):
+        setup(g)
+    monitor = ValveMonitor()
+    monitor.start()
     COMMANDS = {
-        'on': lambda args : turn(0, True),
-        'off': lambda args: turn(0, False),
-        'get': lambda args: ','.join(args)
+        'stop': monitor.stop,
+        'on': lambda args : turn(0 if len(args)==0 else int(args[0]), True),
+        'off': lambda args: turn(0 if len(args)==0 else int(args[0]), False),
+        'get': lambda args: [sched.__dict__ for sched in monitor.schedule],
+        'status': lambda args: monitor.status()
     }
     srv = Server(COMMANDS)
     srv.wait_for_clients()
+    monitor.stop()
     
 

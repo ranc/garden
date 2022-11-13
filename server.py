@@ -14,11 +14,11 @@ class ClientAgent(threading.Thread):
         self.id = ClientAgent.client_id_count
         self.logger = logging.getLogger('agent')
         self.logger.debug(f"Agent {self.id} created")
-        print("new agent")
+        #print("new agent")
 
     def exec(self, inp: str) -> bool:
-        print(f"got: '{inp}'")
-        r = str(inp).split()
+        self.logger.debug(f"got: '{inp}'")
+        r = inp.strip().split()
         if len(r)==0:
             self.conn.sendall("\n".encode('utf-8'))
             return
@@ -27,18 +27,23 @@ class ClientAgent(threading.Thread):
         if cmd == "Close" or cmd == "DummyClose":
             self.conn.close()
             return False
-        if cmd == "StopServer":
+        if cmd.lower() == "stop":
             self.conn.close()
             self.server.stop_server()
+            if 'stop' in self.server.commands:
+                self.server.commands['stop']()
             return False
         
-        print("got command:", cmd, args)
+        self.logger.debug(f"got command:{cmd}({args})")
         if cmd in self.server.commands:
-            res = self.server.commands[cmd](args)
-            if res:
-                res += "\n"
-            else:
-                res = "\n"
+            try:
+                res = str(self.server.commands[cmd](args))
+                if res:
+                    res += "\n"
+                else:
+                    res = "\n"
+            except Exception as e:
+                res = f"Error: {e}\n"
             self.conn.sendall(res.encode('utf-8'))
         else:
             self.conn.sendall(f"Command {cmd} is not supported.".encode('utf-8'))
@@ -54,7 +59,7 @@ class ClientAgent(threading.Thread):
                 if len(data)==0:
                     break
                 try:
-                    recv = data.decode("utf-8")
+                    recv = data.decode("utf-8")                    
                 except UnicodeDecodeError:
                     print("not a unicode:", data)
                     continue

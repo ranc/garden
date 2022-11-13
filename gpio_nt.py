@@ -1,7 +1,7 @@
 def setup(gpio:int):
-    print("setting gpio")
+    print("setting gpio #", gpio)
 
 
 def turn(gpio:int, is_on: bool):
-    print("setting gpio:", is_on)
+    print(f"setting #{gpio}:", is_on)
 

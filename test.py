@@ -1,6 +1,6 @@
 import sys
 from multiprocessing.connection import Client
-from garden_server import Client
+from server import Client
 
 with Client() as conn:
     # just wake the accept to catch the stop

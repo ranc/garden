@@ -1,5 +1,5 @@
 # Project exclude paths
 /cmake-build-debug/
-debug.log
+*.log
 /build/
 __pycache__/
