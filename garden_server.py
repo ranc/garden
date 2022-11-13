@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import threading
@@ -34,9 +35,6 @@ class ValveSchedData:
     start_time: int # seconds since midnight
     duration: int # seconds
 
-    def __str__(self) -> str:
-        return f"valve #: {self.valve_no}"
-
     def set_start_time(self, start_time_str: str) -> bool:
         '''
             returns false if the format is illegal
@@ -60,13 +58,31 @@ class ValveSchedData:
         return self.start_time <= day_sec and day_sec <= self.start_time + self.duration            
 
 
+class ValveOverrideData:
+    valve_no: int # 1-7
+    start_time: int # seconds since midnight
+    duration: int # seconds
+
+    def __init__(self, valve: int, duration: int) -> None:
+        self.valve_no = valve
+        self.duration = duration
+        now = time.localtime(time.time())
+        self.start_time = (now.tm_hour*60 + now.tm_min)*60 + now.tm_sec
+
+
+    def check_if_on(self, day_sec) -> bool:
+        return self.start_time <= day_sec and day_sec <= self.start_time + self.duration            
+
+
 class ValveMonitor(threading.Thread):
     valves_state: List[bool]
     schedule: List[ValveSchedData]
+    override_list: List[ValveOverrideData]
     
     def __init__(self) -> None:
         super().__init__()
         self.schedule = []
+        self.override_list = []
         self.valves_state = []
         self.cfg_path = cfg_path
         self.lastmtime = os.path.getmtime(cfg_path)
@@ -76,7 +92,7 @@ class ValveMonitor(threading.Thread):
         self.configure()
         self.work = True
 
-    def configure(self):        
+    def configure(self):
         self.schedule = []
         with open(self.cfg_path, "r") as f:
             row = 0
@@ -133,6 +149,23 @@ class ValveMonitor(threading.Thread):
         self.work = False
         self.join()
 
+    def override(self, valve: int, duration: int):
+        self.override_list.append(ValveOverrideData(valve, duration))
+
+    def override_cmd(self, args: List[str]) -> str:
+        if len(args) != 2:
+            return "please provide valve no (1-7) and duration (in sec)"
+        ivalve = int(args[0])
+        iduration = int(args[1])
+        if ivalve<1 or ivalve>7:
+            return f"please provide valve no (1-7), got: {args[0]}"
+        if iduration<1:
+            return f"please provide a positive duration, got: {args[1]}"
+        if iduration>3*3600:
+            return f"override duration is limited to 3 hours, got: {args[1]}"
+        self.override(ivalve, iduration)
+        return f"Override of {ivalve} set for {iduration} sec"
+
     def check(self, now: time.struct_time):        
         # tm_wday     range [0, 6], Monday is 0, Sunday is 6
         my_week_day = 1 + ((now.tm_wday + 1) % 7) # Sunday is 1, Monday is 2, Saturday is 7
@@ -146,10 +179,22 @@ class ValveMonitor(threading.Thread):
                 self.valves_state[sched.valve_no] = is_on
                 valves_changed = True
         
+        next_list = []
+        for override in self.override_list:
+            is_on = override.check_if_on(sec_since_midnight)
+            if is_on != self.valves_state[override.valve_no]:
+                self.valves_state[override.valve_no] = is_on
+                valves_changed = True
+            
+            if is_on:
+                next_list.append(override)
+
+        self.override_list = next_list # we do not want to keep overrides once they are done.
+
         if valves_changed:
             self.change_valves()
 
-    
+        
     def change_valves(self):
         '''
          if at time *t* we need to turn on valve 2, while other valve 1 should still be on and valve 3 needs to be off, then:
@@ -191,9 +236,11 @@ if __name__ == "__main__":
         'stop': monitor.stop,
         'on': lambda args : turn(0 if len(args)==0 else int(args[0]), True),
         'off': lambda args: turn(0 if len(args)==0 else int(args[0]), False),
-        'get': lambda args: [sched.__dict__ for sched in monitor.schedule],
+        'get': lambda args: json.dumps([sched.__dict__ for sched in monitor.schedule], indent=4),
+        'override': lambda args: monitor.override_cmd(args),
         'status': lambda args: monitor.status()
     }
+
     srv = Server(COMMANDS)
     srv.wait_for_clients()
     monitor.stop()

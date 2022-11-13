@@ -1,7 +1,12 @@
+import datetime
+
+
 def setup(gpio:int):
-    print("setting gpio #", gpio)
+    now = datetime.datetime.now()
+    print(f"[{now}] setting gpio #", gpio)
 
 
 def turn(gpio:int, is_on: bool):
-    print(f"setting #{gpio}:", is_on)
+    now = datetime.datetime.now()
+    print(f"[{now}] setting #{gpio}:", is_on)
 
