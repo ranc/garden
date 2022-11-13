@@ -45,7 +45,7 @@ class ValveSchedData:
         if len(h_m_s)==2:
             h_m_s.append(0) # assume 0 sec if just HH:mm
         h,m,s = tuple(int(_) for _ in h_m_s)
-        if h<0 or h>23 or m<0 or m>59 or s<0 or s>29:
+        if h<0 or h>23 or m<0 or m>59 or s<0 or s>59:
             return False
         m += h*60
         s += m*60
