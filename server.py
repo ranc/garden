@@ -86,9 +86,10 @@ HOST = '0.0.0.0'
 PORT = 5555    
 
 class Client(socket.socket):
-    def __init__(self) -> None:
+    def __init__(self, host = HOST, port=PORT) -> None:
         super().__init__(socket.AF_INET, socket.SOCK_STREAM)
-        self.connect((HOST, PORT))
+        self.connect((host, port))
+
 
 class Server:
     def __init__(self, commands) -> None:                

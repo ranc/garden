@@ -2,7 +2,7 @@ import sys
 from multiprocessing.connection import Client
 from server import Client
 
-with Client() as conn:
+with Client('10.0.0.12') as conn:
     # just wake the accept to catch the stop
     while True:
         inp = input(">")+"\n"
