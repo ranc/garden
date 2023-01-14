@@ -75,7 +75,7 @@ class ClientAgent(threading.Thread):
                     bar = recv.find('\n')
                 inp = inp + recv
                 
-            print("Agent done...")
+            #print("Agent done...")
 
         except EOFError:
             self.logger.warning(f"Client {self.id} misbehaved and did not close nicely")
@@ -102,7 +102,7 @@ class Server:
             s.bind((HOST, PORT))
             s.listen()
             while not self.stop:
-                print("waiting for new clients...")
+                #print("waiting for new clients...")
                 try:
                     conn, addr = s.accept()
                     ClientAgent(conn, self).start()

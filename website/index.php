@@ -23,32 +23,45 @@ td {
 <?php
 echo "Local time is now:".strftime("%T");
 $srvr = "10.0.0.12";
-$port = 5555
+$port = 5555;
 
 $sock=socket_create(AF_INET,SOCK_STREAM,0) or die("Cannot create a socket");
 socket_connect($sock,$srvr,$port) or die("Could not connect to the socket");
 socket_write($sock,"get\n");
 
-$read=stream_get_line($sock,1024);
-echo $read;
+$json_txt=socket_read($sock,1024, PHP_NORMAL_READ);
+$read=json_decode($json_txt);
 socket_close($sock);
-
-
+$arr = $read
 ?>
+<pre>
+<?php
+ echo $json_txt
+?>
+ 
+</pre>
 <h3>Daily schedule below:</h3>
 <table border="1" style="border: 1px black;">
-<tr><th>Day</th><th>Start Time</th><th>End Time</th></tr>
+<tr><th>Valve</th><th>Day</th><th>Start Time</th><th>Duration</th></tr>
 <?php
   $days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  foreach ($a as $v) {
-     $a=explode(' ', $v);
-	 if (count($a)==1) $d = "any";
-	 else {
-		$d = $days[$a[0]-1];
-		$v = $a[1];
-	 }
-     $s=explode('-',$v);
-     echo "<tr><td>$d</td><td>$s[0]</td><td>$s[1]</td></tr>";
+  foreach ($arr as $v) {    
+    $vlv = $v->valve_no;
+    $day = $days[$v->sched_day];
+    $hour = intval($v->start_time/3600);
+    $tsec = $v->start_time-3600*$hour;
+    $min = intval($tsec/60);
+    $sec = intval($tsec-$min*60);
+    $duration = $v->duration;
+    if ($duration<60)
+    {
+       $duration = $duration." sec";
+    } else {
+       $dmin = intval($duration/60);
+       $dsec = $duration-$dmin*60;
+       $duration = $dmin.":".sprintf("%'.02d",$dsec);
+    }
+    echo "<tr><td>$vlv</td><td>$day</td><td>".sprintf("%'.02d",$hour).":".sprintf("%'.02d",$min).":".sprintf("%'.02d",$sec)."</td><td>$duration</td></tr>";
   }
 ?>
 </table>

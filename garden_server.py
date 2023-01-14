@@ -232,7 +232,7 @@ if __name__ == "__main__":
         'stop': monitor.stop,
         'on': lambda args : turn(0 if len(args)==0 else int(args[0]), True),
         'off': lambda args: turn(0 if len(args)==0 else int(args[0]), False),
-        'get': lambda args: json.dumps([sched.__dict__ for sched in monitor.schedule], indent=4),
+        'get': lambda args: json.dumps([sched.__dict__ for sched in monitor.schedule]),
         'override': lambda args: monitor.override_cmd(args),
         'status': lambda args: monitor.status()
     }
