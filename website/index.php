@@ -1,7 +1,3 @@
-<?php
- $s=file_get_contents('/sys/class/gpio/gpio4/value');
- $stxt=($s[0]=="1" ? 'off':'on');
-?>
 <html>
 <head>
 	<title>Garden Control Center</title>
@@ -23,36 +19,21 @@ td {
 }
 
 </style>
-<h1 class="<?=($stxt)?>">Welcome to the Garden Control Center</h1>
+<h1>Welcome to the Garden Control Center</h1>
 <?php
 echo "Local time is now:".strftime("%T");
-$output = `ls -al /tmp`;
-echo "<pre>$output</pre>";
+$srvr = "10.0.0.12";
+$port = 5555
 
-$filename='/tmp/override';
-if (file_exists($filename))
-{   
-  $o=file_get_contents($filename);
-  echo "<pre>".$o."</pre>";
+$sock=socket_create(AF_INET,SOCK_STREAM,0) or die("Cannot create a socket");
+socket_connect($sock,$srvr,$port) or die("Could not connect to the socket");
+socket_write($sock,"get\n");
 
-  if ($o != "") {
-     $a=explode(' ', $o);
-     $start=filemtime($filename);
-     $end=$start+$a[0]*60;
-     $until=strftime("%R",$end);
-     $l=$end-time();
-     $m=intval($l/60); $l-=$m*60;
-     $h=intval($m/60); $m-=$h*60;
-     if ($h==0)
-            echo "<h3>override for ".sprintf("%02d:%02d",$m,$l)." until $until it will be $a[1]</h3>";
-     else
-            echo "<h3>override for ".sprintf("%d:%02d:%02d",$h,$m,$l)." until $until it will be $a[1]</h3>";
+$read=stream_get_line($sock,1024);
+echo $read;
+socket_close($sock);
 
-  }
-}
-$filename='/home/garden/sched.data';
 
-  $a=file($filename);
 ?>
 <h3>Daily schedule below:</h3>
 <table border="1" style="border: 1px black;">
