@@ -171,27 +171,22 @@ class ValveMonitor(threading.Thread):
         my_week_day = 1 + ((now.tm_wday + 1) % 7) # Sunday is 1, Monday is 2, Saturday is 7
         sec_since_midnight = (now.tm_hour*60 + now.tm_min)*60 + now.tm_sec
         #print("check:", my_week_day, sec_since_midnight)
-        valves_changed = False
+        req_state = [False]*8
         for sched in self.schedule:
             is_on = sched.check_if_on(my_week_day, sec_since_midnight)
-            if is_on != self.valves_state[sched.valve_no]:
-                # we need to drive change
-                self.valves_state[sched.valve_no] = is_on
-                valves_changed = True
+            req_state[sched.valve_no] = is_on
         
         next_list = []
         for override in self.override_list:
             is_on = override.check_if_on(sec_since_midnight)
-            if is_on != self.valves_state[override.valve_no]:
-                self.valves_state[override.valve_no] = is_on
-                valves_changed = True
-            
+            req_state[override.valve_no] = is_on            
             if is_on:
                 next_list.append(override)
 
         self.override_list = next_list # we do not want to keep overrides once they are done.
 
-        if valves_changed:
+        if req_state != self.valves_state:
+            self.valves_state = req_state
             self.change_valves()
 
         
@@ -206,6 +201,7 @@ class ValveMonitor(threading.Thread):
                 3. wait for 1 sec for change to take effect
                 4. we turn off gpio 0, and then all other gpio to save power.
         '''
+        print("Driving change to:", self.valves_state)
         for v,s in enumerate(self.valves_state):
             if v==0:
                 continue
