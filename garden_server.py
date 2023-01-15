@@ -153,9 +153,13 @@ class ValveMonitor(threading.Thread):
         self.override_list.append(ValveOverrideData(valve, duration))
 
     def override_cmd(self, args: List[str]) -> str:
+        # override <valve> <duration>/<off>
         if len(args) != 2:
             return "please provide valve no (1-7) and duration (in sec)"
         ivalve = int(args[0])
+        if args[1]=='off':
+            self.override_list = list(ov for ov in self.override_list if ov.valve_no!=ivalve)
+            return f"Override cleared for valve {ivalve}"
         iduration = int(args[1])
         if ivalve<1 or ivalve>7:
             return f"please provide valve no (1-7), got: {args[0]}"
@@ -233,6 +237,7 @@ if __name__ == "__main__":
         'on': lambda args : turn(0 if len(args)==0 else int(args[0]), True),
         'off': lambda args: turn(0 if len(args)==0 else int(args[0]), False),
         'get': lambda args: json.dumps([sched.__dict__ for sched in monitor.schedule]),
+        'ovl': lambda args: json.dumps([sched.__dict__ for sched in monitor.override_list]),
         'override': lambda args: monitor.override_cmd(args),
         'status': lambda args: monitor.status()
     }
