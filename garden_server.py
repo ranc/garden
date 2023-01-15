@@ -14,7 +14,14 @@ else:
     from gpio_linux import turn, setup
     cfg_path = "/home/pi/garden_sched.cfg"
 
-''' strcuture of GPIO:
+
+'''
+    wires on hoze:
+            white: ground
+            red: when positive: open
+            black: when positive: close
+
+ strcuture of GPIO:
     GPIO 0: main power driver for changing valves, turns on when a valve need to change state
     GPIO n: the command for valve *n*, on: to turn on, off: to turn off.
         For Example:
@@ -28,6 +35,8 @@ else:
                 4. we turn off gpio 0, and then all other gpio to save power.
 
 '''
+
+change_drive_time = 3 # time it takes to change the valve
 
 class ValveSchedData:
     valve_no: int # 1-7
@@ -91,6 +100,7 @@ class ValveMonitor(threading.Thread):
         self.last_live_time = time.perf_counter()
         self.configure()
         self.work = True
+        self.logger = logging.getLogger('monitor')
 
     def configure(self):
         self.schedule = []
@@ -220,13 +230,13 @@ class ValveMonitor(threading.Thread):
                 3. wait for 1 sec for change to take effect
                 4. we turn off gpio 0, and then all other gpio to save power.
         '''
-        print("Driving change to:", self.valves_state)
+        self.logger.info(f"Driving change to: {self.valves_state}")
         for v,s in enumerate(self.valves_state):
             if v==0:
                 continue
             turn(v,s)
         turn(0, True)  # drive the change (an all valves, but just the new state will change)
-        time.sleep(1)
+        time.sleep(change_drive_time)
         # turn off everything, starting with 0
         for v in range(len(self.valves_state)):
             turn(v, False)
