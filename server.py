@@ -136,4 +136,4 @@ class Server:
         for agent in list(self.agents.values()):
             agent.stop = True
             agent.conn.close()
-            agent.join()
+            #agent.join()
