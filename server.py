@@ -119,6 +119,6 @@ class Server:
         self.stop = True        
         # this is a hack, it works but ugly
         # self.listener._listener._socket.shutdown(SHUT_RDWR)
-        with Client() as conn:
+        with Client(HOST, PORT) as conn:
             # just wake the accept to catch the stop
             conn.send('DummyClose'.encode('utf-8'))
