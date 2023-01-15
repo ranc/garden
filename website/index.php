@@ -112,7 +112,7 @@ $arr = $read
 ?>
 <tr>
    <td><?=$i?></td>
-   <?php foreach ([3, 10, 30, 60, 120, 300, 600] as $d) { ?>
+   <?php foreach ([3, 10, 60, 120, 600] as $d) { ?>
      <td>
         <a href="/override.php?valve=<?=$i?>&d=<?=$d?>"><?=$d?> sec</a>
      </td>
@@ -120,3 +120,11 @@ $arr = $read
 </tr>
 <?php } ?>
 </table>
+<br/><br/>
+
+<a href="/override.php?on=0">ON 0</a>
+<a href="/override.php?off=0">OFF 0</a>
+<br/><br/>
+
+<a href="/override.php?on=1">ON 1</a>
+<a href="/override.php?off=1">OFF 1</a>
