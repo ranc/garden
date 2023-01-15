@@ -2,10 +2,13 @@ import errno
 import socket
 import threading
 import logging
+from typing import Dict
 
 
 class ClientAgent(threading.Thread):            
     client_id_count = 0
+    id: int
+
     def __init__(self, conn: socket.socket, server: 'Server'):
         super().__init__()
         ClientAgent.client_id_count += 1
@@ -79,8 +82,11 @@ class ClientAgent(threading.Thread):
 
         except EOFError:
             self.logger.warning(f"Client {self.id} misbehaved and did not close nicely")
-            self.conn.close()
-            return
+        
+        self.conn.close()
+        if self.id in self.server.agents:
+            del self.server.agents[self.id]
+        return
 
 HOST = '0.0.0.0'  
 PORT = 5555    
@@ -92,10 +98,13 @@ class Client(socket.socket):
 
 
 class Server:
+    agents:  Dict[int, ClientAgent]
+    
     def __init__(self, commands) -> None:                
         self.stop = False
         self.logger = logging.getLogger('server')
         self.commands = commands
+        self.agents = {}
         
     def wait_for_clients(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -104,8 +113,10 @@ class Server:
             while not self.stop:
                 #print("waiting for new clients...")
                 try:
-                    conn, addr = s.accept()
-                    ClientAgent(conn, self).start()
+                    conn, _ = s.accept()
+                    agent = ClientAgent(conn, self)
+                    agent.start()
+                    self.agents[agent.id] = agent
                 except OSError:
                     break
                 except KeyboardInterrupt:
@@ -122,3 +133,7 @@ class Server:
         with Client(HOST, PORT) as conn:
             # just wake the accept to catch the stop
             conn.send('DummyClose'.encode('utf-8'))
+        for agent in list(self.agents.values()):
+            agent.stop = True
+            agent.conn.close()
+            agent.join()
