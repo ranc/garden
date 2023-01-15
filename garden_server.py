@@ -3,7 +3,7 @@ import logging
 import os
 import threading
 import time
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from server import Server
 
@@ -137,7 +137,7 @@ class ValveMonitor(threading.Thread):
                 self.lastmtime = lastmtime                
                 self.configure()
             try:
-                self.check(time.localtime(time.time()))
+                self.check()
             except Exception as e:
                 print(f"Error {e}, retrying...")
             time.sleep(1)
@@ -170,10 +170,25 @@ class ValveMonitor(threading.Thread):
         self.override(ivalve, iduration)
         return f"Override of {ivalve} set for {iduration} sec"
 
-    def check(self, now: time.struct_time):        
+    @staticmethod
+    def get_week_time() -> Tuple[int, int]:
+        now = time.localtime(time.time())
         # tm_wday     range [0, 6], Monday is 0, Sunday is 6
         my_week_day = 1 + ((now.tm_wday + 1) % 7) # Sunday is 1, Monday is 2, Saturday is 7
         sec_since_midnight = (now.tm_hour*60 + now.tm_min)*60 + now.tm_sec
+        return my_week_day, sec_since_midnight
+
+    def get_ovl(self) -> List[Dict]:
+        ret = []
+        _, sec_since_midnight = self.get_week_time()        
+        for ov in self.override_list:
+            d = ov.__dict__
+            d['left'] = ov.start_time+ov.duration-sec_since_midnight
+            ret.append(d)
+        return ret
+
+    def check(self):        
+        my_week_day, sec_since_midnight = self.get_week_time()
         #print("check:", my_week_day, sec_since_midnight)
         req_state = [False]*8
         for sched in self.schedule:
@@ -237,7 +252,7 @@ if __name__ == "__main__":
         'on': lambda args : turn(0 if len(args)==0 else int(args[0]), True),
         'off': lambda args: turn(0 if len(args)==0 else int(args[0]), False),
         'get': lambda args: json.dumps([sched.__dict__ for sched in monitor.schedule]),
-        'ovl': lambda args: json.dumps([sched.__dict__ for sched in monitor.override_list]),
+        'ovl': lambda args: json.dumps(monitor.get_ovl()),
         'override': lambda args: monitor.override_cmd(args),
         'status': lambda args: monitor.status()
     }
