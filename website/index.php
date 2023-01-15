@@ -22,36 +22,44 @@ td {
 <h1>Welcome to the Garden Control Center</h1>
 <?php
 echo "Local time is now:".strftime("%T");
-$srvr = "10.0.0.12";
+$srvr = "127.0.0.1";
 $port = 5555;
 
 $sock=socket_create(AF_INET,SOCK_STREAM,0) or die("Cannot create a socket");
 socket_connect($sock,$srvr,$port) or die("Could not connect to the socket");
-socket_write($sock,"get\n");
 
+socket_write($sock,"get\n");
 $json_txt=socket_read($sock,1024, PHP_NORMAL_READ);
 $read=json_decode($json_txt);
+
+socket_write($sock,"ovl\n");
+$ovl=json_decode(socket_read($sock,1024, PHP_NORMAL_READ));
 socket_close($sock);
 $arr = $read
+
 ?>
-<pre>
-<?php
- echo $json_txt
-?>
- 
-</pre>
 <h3>Daily schedule below:</h3>
 <table border="1" style="border: 1px black;">
 <tr><th>Valve</th><th>Day</th><th>Start Time</th><th>Duration</th></tr>
 <?php
+
+  function time2clock($time) {
+    $hour = intval($time/3600);
+    $tsec = $time-3600*$hour;
+    $min = intval($tsec/60);
+    $sec = intval($tsec-$min*60);
+    return [$hour, $min, $sec];
+  }
+  function clock2str($clk)
+  {
+    return sprintf("%'.02d",$clk[0]).":".sprintf("%'.02d",$clk[1]).":".sprintf("%'.02d",$clk[2]);
+  }
+
   $days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   foreach ($arr as $v) {    
     $vlv = $v->valve_no;
     $day = $days[$v->sched_day];
-    $hour = intval($v->start_time/3600);
-    $tsec = $v->start_time-3600*$hour;
-    $min = intval($tsec/60);
-    $sec = intval($tsec-$min*60);
+    $clk = time2clock($v->start_time);
     $duration = $v->duration;
     if ($duration<60)
     {
@@ -61,44 +69,54 @@ $arr = $read
        $dsec = $duration-$dmin*60;
        $duration = $dmin.":".sprintf("%'.02d",$dsec);
     }
-    echo "<tr><td>$vlv</td><td>$day</td><td>".sprintf("%'.02d",$hour).":".sprintf("%'.02d",$min).":".sprintf("%'.02d",$sec)."</td><td>$duration</td></tr>";
+    echo "<tr><td>$vlv</td><td>$day</td><td>".clock2str($clk)."</td><td>$duration</td></tr>";
   }
 ?>
 </table>
+
+<h3>Override list:</h3>
+<table border="1" style="border: 1px black;">
+<tr>
+  <th>Valve</th>
+  <th>Start Time</th>
+  <th>End Time</th>
+  <th>Duration</th>
+  <th>Left to finish</th>
+</tr>
+<?php
+  foreach ($ovl as $v) {
+    $vlv = $v->valve_no;
+    $duration = $v->duration;
+    $start_clk = time2clock($v->start_time);
+    $end_clk = time2clock($v->start_time+$duration);
+    $left = $v->left;
+?>
+<tr>
+  <td><?=$vlv?></td>
+  <td><?=clock2str($start_clk)?></td>
+  <td><?=clock2str($end_clk)?></td>
+  <td><?=$duration?></td>
+  <td><?=$left?></td>
+  <td><a href="/override.php?valve=<?=$vlv?>&off">X</a></td>
+</tr>
+<?php
+  }
+?>
+</table>
+
+
 <h3>For manuall on/off click the links below:</h3>
 <table border="1">
-<tr><th class='off'>Turn Off</th><th class='on'>Turn On</th></tr>
+<?php
+  for ($i = 1; $i < 8; $i++) {
+?>
 <tr>
-   <td>
-      <a href="/setup.php?hour=1&off">1 hour</a>
-   </td><td>
-      <a href="/setup.php?hour=1&on">1 hour</a>
-   </td>
+   <td><?=$i?></td>
+   <?php foreach ([3, 10, 30, 60, 120, 300, 600] as $d) { ?>
+     <td>
+        <a href="/override.php?valve=<?=$i?>&d=<?=$d?>"><?=$d?> sec</a>
+     </td>
+   <?php } ?>
 </tr>
-<tr>
-   <td>
-      <a href="/setup.php?hour=2&off">2 hour</a>
-   </td><td>
-      <a href="/setup.php?hour=2&on">2 hour</a>
-   </td>
-</tr>
-<tr>
-   <td>
-      <a href="/setup.php?hour=4&off">4 hour</a>
-   </td><td>
-      <a href="/setup.php?hour=4&on">4 hour</a>
-   </td>
-</tr>
-<tr>
-   <td>
-      <a href="/setup.php?hour=8&off">8 hour</a>
-   </td><td>
-      <a href="/setup.php?hour=8&on">8 hour</a>
-   </td>
-</tr>
+<?php } ?>
 </table>
-<br/>
-<b><a href="/setup.php?clear">Clear manual override</b>
-<br/>
-<br/>
-<br/>
