@@ -58,7 +58,7 @@ The old TCP command server (`server.py`, port 5555), `test.py`, the PHP pages, t
 1. Overrides can only force a valve ON (no forced OFF), and they end early if they cross midnight.
 2. There's no authentication on the web UI or API (LAN only).
 3. sysfs GPIO is deprecated. Newer Raspberry Pi OS kernels offset the sysfs numbers (for example 512+BCM), so a move to `gpiod`/`gpiozero` may be needed.
-4. Requires Python 3.8+ (it uses `logging.basicConfig(force=True)` and `ThreadingHTTPServer`).
+4. Must stay compatible with Python 3.7 (the version on the Pi): no walrus operator, no `force=` in `logging.basicConfig`, no 3.8+ APIs.
 
 ## Running locally
 

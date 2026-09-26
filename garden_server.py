@@ -309,7 +309,7 @@ def set_logging():
     handler = handlers.RotatingFileHandler('garden.log', maxBytes=20000, backupCount=3)
     formatter = logging.Formatter('%(asctime)s %(levelname)-10.10s [%(name)-15.15s]: %(message)s')
     handler.setFormatter(formatter)
-    logging.basicConfig(handlers=[handler, logging.StreamHandler()], force=True)
+    logging.basicConfig(handlers=[handler, logging.StreamHandler()])
     logging.getLogger().setLevel(logging.INFO)
 
 
