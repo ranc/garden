@@ -58,7 +58,7 @@ $arr = $read
   $days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   foreach ($arr as $v) {    
     $vlv = $v->valve_no;
-    $day = $days[$v->sched_day];
+    $day = $days[$v->sched_day - 1];
     $clk = time2clock($v->start_time);
     $duration = $v->duration;
     if ($duration<60)
