@@ -1,0 +1,30 @@
+# Garden irrigation daemon: valve scheduler + web UI on port 80
+#
+# Install on the Pi (code checked out at /home/pi/garden):
+#   sudo systemctl disable --now apache2          # frees port 80
+#   sudo cp /home/pi/garden/deploy/garden.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now garden
+#
+# Logs:     journalctl -u garden -f   (also /home/pi/garden/garden.log)
+# Restart:  sudo systemctl restart garden
+
+[Unit]
+Description=Garden irrigation controller
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=gpio
+# allow binding port 80 without running as root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+WorkingDirectory=/home/pi/garden
+ExecStart=/usr/bin/python3 -u /home/pi/garden/garden_server.py
+Restart=always
+RestartSec=5
+# stopping waits for a valve drive in progress (~3 s per valve)
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

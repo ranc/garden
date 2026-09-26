@@ -27,3 +27,12 @@ def setup(gpio:int):
       print(f"Warning setting gpio direction {gpio} device {gpio_map[gpio]}:", ex)
     turn(gpio, False)
 
+
+
+def get(gpio:int):
+    '''returns True if the port is on (active low), None if it is not set up'''
+    gpiofile = f"/sys/class/gpio/gpio{gpio_map[gpio]}/value"
+    if not os.path.exists(gpiofile):
+        return None
+    with open(gpiofile, "r") as f:
+        return f.read().strip() == '0'

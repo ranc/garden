@@ -1,18 +1,23 @@
-import json
 import logging
 import os
+import signal
+import sys
 import threading
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from server import Server
+from web_server import WebServer
 
 if os.name == 'nt':
-    from gpio_nt import turn, setup
+    from gpio_nt import turn, setup, get, gpio_map
     cfg_path = "test.cfg"
+    http_port = 8080
 else:
-    from gpio_linux import turn, setup
+    from gpio_linux import turn, setup, get, gpio_map
     cfg_path = "/home/pi/garden_sched.cfg"
+    http_port = 80
+http_port = int(os.environ.get("GARDEN_HTTP_PORT", http_port))
+static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "website")
 
 
 '''
@@ -21,25 +26,38 @@ else:
             red: when positive: open
             black: when positive: close
 
- strcuture of GPIO:
-    GPIO 0: main power driver for changing valves, turns on when a valve need to change state
-    GPIO n: the command for valve *n*, on: to turn on, off: to turn off.
-        For Example:
-            if at time *t* we need to turn on valve 2, while other valve 1 should still be on and valve 3 needs to be off, then:
-                1. we setup:
-                    gpio 1: on
-                    gpio 2: on
-                    gpio 3: off
-                2. we turn on gpio 0 to drive change (only gpio 2 will change)
-                3. wait for 1 sec for change to take effect
-                4. we turn off gpio 0, and then all other gpio to save power.
+ strcuture of GPIO (logical ports 0-7, see gpio_map for the BCM pins):
+    each solenoid has a pair of ports:
+        port 2*(n-1)  : power of solenoid *n*, turns on only while the solenoid needs to change state
+        port 2*(n-1)+1: direction of solenoid *n*, on: to open, off: to close
+    so: 0,1 -> solenoid 1 | 2,3 -> solenoid 2 | 4,5 -> solenoid 3 | 6,7 -> solenoid 4
 
+    For Example, to open solenoid 2:
+        1. turn on port 3 (direction: open)
+        2. wait a moment for the direction relay to settle
+        3. turn on port 2 (power) for change_drive_time seconds, then turn it off
+        4. turn off port 3 to save power
+    only solenoids whose state changed are driven, one after the other.
 '''
 
+NUM_VALVES = 4
+NUM_PORTS = 2 * NUM_VALVES
+MAX_OVERRIDE_SEC = 3 * 3600
+MAX_PULSE_SEC = 10
 change_drive_time = 3 # time it takes to change the valve
+relay_settle_time = 0.1 # time for the direction relay to settle before/after power
+
+
+def power_port(valve: int) -> int:
+    return 2 * (valve - 1)
+
+
+def direction_port(valve: int) -> int:
+    return 2 * (valve - 1) + 1
+
 
 class ValveSchedData:
-    valve_no: int # 1-7
+    valve_no: int # 1-4
     sched_day: int # 0 - all day, 1-Sunday, 7- Saturday
     start_time: int # seconds since midnight
     duration: int # seconds
@@ -64,11 +82,11 @@ class ValveSchedData:
     def check_if_on(self, wday, day_sec) -> bool:
         if self.sched_day > 0 and wday != self.sched_day:
             return False # not today :-)
-        return self.start_time <= day_sec and day_sec <= self.start_time + self.duration            
+        return self.start_time <= day_sec and day_sec <= self.start_time + self.duration
 
 
 class ValveOverrideData:
-    valve_no: int # 1-7
+    valve_no: int # 1-4
     start_time: int # seconds since midnight
     duration: int # seconds
 
@@ -80,105 +98,103 @@ class ValveOverrideData:
 
 
     def check_if_on(self, day_sec) -> bool:
-        return self.start_time <= day_sec and day_sec <= self.start_time + self.duration            
+        return self.start_time <= day_sec and day_sec <= self.start_time + self.duration
 
 
 class ValveMonitor(threading.Thread):
-    valves_state: List[bool]
+    valves_state: List[Optional[bool]]
     schedule: List[ValveSchedData]
     override_list: List[ValveOverrideData]
-    
+
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(name="monitor")
+        self.logger = logging.getLogger('monitor')
+        self.lock = threading.Lock() # guards override_list, taken by the web threads too
         self.schedule = []
         self.override_list = []
-        self.valves_state = []
         self.cfg_path = cfg_path
         self.lastmtime = os.path.getmtime(cfg_path)
-        self.valves_state = [False]*8 # 0 is dummy     
+        # 0 is dummy, None means unknown: the first check drives every valve to its required state
+        self.valves_state = [None]*(NUM_VALVES+1)
         self.keepalive_count = 0
         self.last_live_time = time.perf_counter()
         self.configure()
         self.work = True
-        self.logger = logging.getLogger('monitor')
 
     def configure(self):
-        self.schedule = []
+        schedule = []
         with open(self.cfg_path, "r") as f:
             row = 0
             for line in f:
-                row += 1               
+                row += 1
                 line = line.strip()
                 if len(line)==0:
                     continue
                 if line[0]=="#":
                     continue
                 # Structure of config file: <value #> <list(day 0: all days, 1-7 specific day)> <time 24 hours hh:mm or hh:mm:ss> <on duration in seconds>
-                valve, day_list, start_time, duration = line.split()[:4]
-                for day in day_list.split(","):
-                    iday = int(day)
+                try:
+                    valve, day_list, start_time, duration = line.split()[:4]
+                    ivalve, iduration = int(valve), int(duration)
+                    idays = [int(day) for day in day_list.split(",")]
+                except ValueError:
+                    self.logger.error(f"row {row} is not '<valve> <days> <hh:mm> <sec>': {line}")
+                    continue
+                if ivalve<1 or ivalve>NUM_VALVES:
+                    self.logger.error(f"Got value {valve} but valve must be 1 to {NUM_VALVES} in row {row}")
+                    continue
+                if iduration<1:
+                    self.logger.error(f"duration {duration} is less than 1 sec in row {row}")
+                    continue
+                for iday in idays:
                     if iday<0 or iday>7:
-                        print(f"day {day} is illegal in row {row}")
-                        break
-                    iduration = int(duration)
-                    if iduration<1:
-                        print(f"duration {duration} is less than 1 sec in row {row}")
-                        break
-                    ivalve = int(valve)
-                    if ivalve<1 or ivalve>7:
-                        print(f"Got value {valve} but valve must be 1 to 7 in row {row}")
-                        break
+                        self.logger.error(f"day {iday} is illegal in row {row}")
+                        continue
                     sched = ValveSchedData()
                     sched.valve_no = ivalve
                     sched.sched_day = iday
                     sched.duration = iduration
                     if not sched.set_start_time(start_time):
-                        print(f"Start Time {start_time} is illegal in row {row}")
-                        del sched
+                        self.logger.error(f"Start Time {start_time} is illegal in row {row}")
                         break
-                    self.schedule.append(sched)                   
+                    schedule.append(sched)
+        self.schedule = schedule
+        self.logger.info(f"Loaded {len(schedule)} schedule entries from {self.cfg_path}")
 
     def run(self):
         while self.work:
             self.keepalive_count += 1
             self.last_live_time = time.perf_counter()
-            lastmtime = os.path.getmtime(self.cfg_path)
-            if lastmtime != self.lastmtime:
-                self.lastmtime = lastmtime                
-                self.configure()
             try:
+                lastmtime = os.path.getmtime(self.cfg_path)
+                if lastmtime != self.lastmtime:
+                    self.lastmtime = lastmtime
+                    self.configure()
                 self.check()
             except Exception as e:
-                print(f"Error {e}, retrying...")
+                self.logger.exception(f"Error {e}, retrying...")
             time.sleep(1)
 
-    def status(self):
+    def status(self) -> Tuple[float, int]:
         return time.perf_counter()-self.last_live_time, self.keepalive_count
-    
+
     def stop(self):
         self.work = False
         self.join()
 
-    def override(self, valve: int, duration: int):
-        self.override_list.append(ValveOverrideData(valve, duration))
+    def add_override(self, valve: int, duration: int) -> str:
+        if valve<1 or valve>NUM_VALVES:
+            raise ValueError(f"valve must be 1-{NUM_VALVES}, got: {valve}")
+        if duration<1 or duration>MAX_OVERRIDE_SEC:
+            raise ValueError(f"duration must be 1-{MAX_OVERRIDE_SEC} sec, got: {duration}")
+        with self.lock:
+            self.override_list.append(ValveOverrideData(valve, duration))
+        return f"Valve {valve} on for {duration} sec"
 
-    def override_cmd(self, args: List[str]) -> str:
-        # override <valve> <duration>/<off>
-        if len(args) != 2:
-            return "please provide valve no (1-7) and duration (in sec)"
-        ivalve = int(args[0])
-        if args[1]=='off':
-            self.override_list = list(ov for ov in self.override_list if ov.valve_no!=ivalve)
-            return f"Override cleared for valve {ivalve}"
-        iduration = int(args[1])
-        if ivalve<1 or ivalve>7:
-            return f"please provide valve no (1-7), got: {args[0]}"
-        if iduration<1:
-            return f"please provide a positive duration, got: {args[1]}"
-        if iduration>3*3600:
-            return f"override duration is limited to 3 hours, got: {args[1]}"
-        self.override(ivalve, iduration)
-        return f"Override of {ivalve} set for {iduration} sec"
+    def cancel_override(self, valve: int) -> str:
+        with self.lock:
+            self.override_list = [ov for ov in self.override_list if ov.valve_no!=valve]
+        return f"Manual run of valve {valve} stopped"
 
     @staticmethod
     def get_week_time() -> Tuple[int, int]:
@@ -189,57 +205,103 @@ class ValveMonitor(threading.Thread):
         return my_week_day, sec_since_midnight
 
     def get_ovl(self) -> List[Dict]:
-        ret = []
-        _, sec_since_midnight = self.get_week_time()        
-        for ov in self.override_list:
-            d = ov.__dict__
-            d['left'] = ov.start_time+ov.duration-sec_since_midnight
-            ret.append(d)
-        return ret
+        _, sec_since_midnight = self.get_week_time()
+        with self.lock:
+            return [dict(ov.__dict__, left=ov.start_time+ov.duration-sec_since_midnight)
+                    for ov in self.override_list]
 
-    def check(self):        
+    def check(self):
         my_week_day, sec_since_midnight = self.get_week_time()
-        #print("check:", my_week_day, sec_since_midnight)
-        req_state = [False]*8
+        # a valve is open if any of its schedule entries or overrides is active
+        req_state = [False]*(NUM_VALVES+1)
         for sched in self.schedule:
-            is_on = sched.check_if_on(my_week_day, sec_since_midnight)
-            req_state[sched.valve_no] = is_on
-        
-        next_list = []
-        for override in self.override_list:
-            is_on = override.check_if_on(sec_since_midnight)
-            req_state[override.valve_no] = is_on            
-            if is_on:
-                next_list.append(override)
+            if sched.check_if_on(my_week_day, sec_since_midnight):
+                req_state[sched.valve_no] = True
 
-        self.override_list = next_list # we do not want to keep overrides once they are done.
+        with self.lock:
+            next_list = []
+            for override in self.override_list:
+                if override.check_if_on(sec_since_midnight):
+                    req_state[override.valve_no] = True
+                    next_list.append(override)
+            self.override_list = next_list # we do not want to keep overrides once they are done.
 
-        if req_state != self.valves_state:
-            self.valves_state = req_state
-            self.change_valves()
+        self.change_valves(req_state)
 
-        
-    def change_valves(self):
+    def change_valves(self, req_state: List[bool]):
         '''
-         if at time *t* we need to turn on valve 2, while other valve 1 should still be on and valve 3 needs to be off, then:
-                1. we setup:
-                    gpio 1: on
-                    gpio 2: on
-                    gpio 3: off
-                2. we turn on gpio 0 to drive change (only gpio 2 will change)
-                3. wait for 1 sec for change to take effect
-                4. we turn off gpio 0, and then all other gpio to save power.
+         drive only the valves whose state changed, one after the other
         '''
-        self.logger.info(f"Driving change to: {self.valves_state}")
-        for v,s in enumerate(self.valves_state):
-            if v==0:
+        for v in range(1, NUM_VALVES+1):
+            if req_state[v] == self.valves_state[v]:
                 continue
-            turn(v,s)
-        turn(0, True)  # drive the change (an all valves, but just the new state will change)
-        time.sleep(change_drive_time)
-        # turn off everything, starting with 0
-        for v in range(len(self.valves_state)):
-            turn(v, False)
+            self.drive_valve(v, req_state[v])
+            self.valves_state[v] = req_state[v]
+
+    def drive_valve(self, valve: int, is_open: bool):
+        pwr, drc = power_port(valve), direction_port(valve)
+        self.logger.info(f"Driving valve {valve} to {'open' if is_open else 'close'}")
+        turn(pwr, False) # never switch direction while powered
+        turn(drc, is_open)
+        time.sleep(relay_settle_time)
+        try:
+            turn(pwr, True)
+            time.sleep(change_drive_time)
+        finally:
+            turn(pwr, False)
+            time.sleep(relay_settle_time)
+            turn(drc, False)
+
+
+def as_int(body: dict, key: str) -> int:
+    try:
+        return int(body[key])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"'{key}' must be an integer")
+
+
+def check_port(port: int) -> int:
+    if port<0 or port>=NUM_PORTS:
+        raise ValueError(f"port must be 0-{NUM_PORTS-1}, got: {port}")
+    return port
+
+
+def port_cmd(body: dict) -> str:
+    # {"port": n, "action": "on" | "off" | "pulse", "sec": pulse length (default 1)}
+    port = check_port(as_int(body, "port"))
+    action = body.get("action")
+    if action in ("on", "off"):
+        turn(port, action == "on")
+        return f"Port {port} {action}"
+    if action == "pulse":
+        sec = float(body.get("sec", 1))
+        if sec<=0 or sec>MAX_PULSE_SEC:
+            raise ValueError(f"pulse must be up to {MAX_PULSE_SEC} sec, got: {sec}")
+        turn(port, True)
+        threading.Timer(sec, turn, (port, False)).start()
+        return f"Port {port} pulsed for {sec:g} sec"
+    raise ValueError(f"action must be on, off or pulse, got: {action}")
+
+
+def all_off() -> str:
+    for p in range(NUM_PORTS):
+        turn(p, False)
+    return "All ports are off"
+
+
+def get_state(monitor: ValveMonitor) -> dict:
+    tick_age, ticks = monitor.status()
+    return {
+        "now": time.strftime("%a %d %b %H:%M:%S"),
+        "num_valves": NUM_VALVES,
+        "gpio_map": list(gpio_map),
+        "cfg_path": monitor.cfg_path,
+        "monitor": {"tick_age": round(tick_age, 1), "ticks": ticks, "alive": monitor.is_alive()},
+        "schedule": [sched.__dict__ for sched in monitor.schedule],
+        "overrides": monitor.get_ovl(),
+        "valves": monitor.valves_state[1:],
+        "ports": [get(p) for p in range(NUM_PORTS)],
+    }
 
 
 def set_logging():
@@ -247,28 +309,40 @@ def set_logging():
     handler = handlers.RotatingFileHandler('garden.log', maxBytes=20000, backupCount=3)
     formatter = logging.Formatter('%(asctime)s %(levelname)-10.10s [%(name)-15.15s]: %(message)s')
     handler.setFormatter(formatter)
-    logging.basicConfig(handlers=[handler], force=True)
+    logging.basicConfig(handlers=[handler, logging.StreamHandler()], force=True)
     logging.getLogger().setLevel(logging.INFO)
 
 
-if __name__ == "__main__":
+def main():
     set_logging()
-    for g in range(8):
+    for g in range(NUM_PORTS):
         setup(g)
     monitor = ValveMonitor()
     monitor.start()
-    COMMANDS = {
-        'stop': monitor.stop,
-        'on': lambda args : turn(0 if len(args)==0 else int(args[0]), True),
-        'off': lambda args: turn(0 if len(args)==0 else int(args[0]), False),
-        'get': lambda args: json.dumps([sched.__dict__ for sched in monitor.schedule]),
-        'ovl': lambda args: json.dumps(monitor.get_ovl()),
-        'override': lambda args: monitor.override_cmd(args),
-        'status': lambda args: monitor.status()
+
+    get_routes = {
+        'state': lambda: get_state(monitor),
     }
+    post_routes = {
+        'override': lambda b: monitor.add_override(as_int(b, "valve"), as_int(b, "sec")),
+        'cancel': lambda b: monitor.cancel_override(as_int(b, "valve")),
+        'port': port_cmd,
+        'alloff': lambda b: all_off(),
+    }
+    srv = WebServer(http_port, static_dir, get_routes, post_routes)
+    # systemd stops us with SIGTERM: turn it into a clean exit so no relay is left powered
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    logging.getLogger('web').info(f"Serving on port {http_port}")
+    try:
+        srv.serve_forever()
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        srv.server_close()
+        monitor.stop() # waits for a valve drive in progress to finish
+        all_off()
+        logging.getLogger('web').info("Stopped")
 
-    srv = Server(COMMANDS)
-    srv.wait_for_clients()
-    monitor.stop()
-    
 
+if __name__ == "__main__":
+    main()
