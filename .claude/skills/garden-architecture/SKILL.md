@@ -12,19 +12,22 @@ A Raspberry Pi opens and closes 4 latching irrigation solenoids on a schedule. E
                                  ├─ WebServer (web_server.py, ThreadingHTTPServer)
                                  │    ├─ GET /            → website/index.html (static SPA)
                                  │    └─ /api/*           → JSON routes defined in garden_server.main()
-                                 └─ ValveMonitor thread: 1 s tick
+                                 ├─ ValveMonitor thread: 1 s tick, decides what each valve should be
                                       ├─ garden_config.json: names + schedule (hot reload on mtime change, written by /api/valve)
                                       ├─ in-memory override list (guarded by monitor.lock)
-                                      └─ drive_valve() ──▶ gpio_linux.turn() ──▶ /sys/class/gpio/gpioN/value
+                                      └─ queue.request(valve, state, reason)
+                                 └─ DriveQueue thread (drive_queue.py): one drive at a time, waits for the capacitor charge
+                                      └─ execute() ──▶ gpio_linux.turn() ──▶ /sys/class/gpio/gpioN/value
                                                                                    │
-                                                                     relay board ──▶ solenoids 1-4
+                                                       relay board + 4700µF drive capacitor ──▶ solenoids 1-4
 ```
 
 ## Components
 
 | File | Role | Details in |
 |---|---|---|
-| `garden_server.py` | Entry point. Holds the wiring constants (`NUM_VALVES`, `power_port`, `direction_port`), the schedule and override classes, `ValveMonitor`, the API functions (`get_state`, `port_cmd`, `all_off`), and `main()`, which wires up the routes and handles shutdown. | `garden-schedule`, `garden-gpio-wiring` |
+| `garden_server.py` | Entry point. Holds `NUM_VALVES`, the schedule and override classes, `ValveMonitor` (which requests valve states from the queue), the API functions (`get_state`, `port_cmd`, `all_off`), and `main()`, which wires up the queue, monitor, routes and shutdown. | `garden-schedule`, `garden-gpio-wiring` |
+| `drive_queue.py` | `DriveQueue` thread: executes every solenoid drive in order, times the capacitor recharge and the direction-before-power lead, and reports status for the Activity panel. It also holds the electrical timing constants and `power_port`/`direction_port`. | `garden-gpio-wiring` |
 | `garden_config.py` | Load, validate, save and legacy-import of the JSON valve config (names + schedule). | `garden-schedule` |
 | `web_server.py` | Generic HTTP server: static whitelist, JSON GET/POST dispatch, error mapping. It knows nothing about valves. | `garden-web-api` |
 | `website/index.html` | The whole UI: 4 tabs (Schedule / Manual / Setup / Test) that poll `/api/state`. | `garden-web-api` |
@@ -43,13 +46,13 @@ The old TCP command server (`server.py`, port 5555), `test.py`, the PHP pages, t
 - Apache must be disabled (`systemctl disable --now apache2`) because it would hold port 80.
 - Config (names + schedule): `/home/pi/garden_config.json`, hot reloaded and written atomically by the Setup page. On first start it was imported from the old `/home/pi/garden_sched.cfg`, which is no longer read.
 - Logs: stdout goes to journald (`journalctl -u garden -f`), and `garden.log` sits in the working directory (rotating, 20 KB × 3).
-- Shutdown: SIGTERM → `sys.exit` → `serve_forever` exits → `monitor.stop()` (waits for any valve drive in progress) → `all_off()`. `TimeoutStopSec=30`.
+- Shutdown: SIGTERM → `sys.exit` → `serve_forever` exits → `monitor.stop()` → `queue.stop()` (drops pending drives, finishes a pulse in progress) → `all_off()`. `TimeoutStopSec=30`.
 - The PyCharm remote mapping in `.idea/deployment.xml` still points to `/tmp/Garden`. That's only a dev upload target, and it's wiped on reboot.
 
 ## Key invariants
 
-- **One process, shared state.** HTTP handler threads and the monitor share `ValveMonitor`. `override_list` changes must hold `monitor.lock`, and the lock must never be held during a valve drive (each drive takes about 3.2 s).
-- **Edge-triggered drives.** `check()` ORs the active schedule entries and overrides into `req_state`. `change_valves()` pulses only the valves that changed. `valves_state` starts as `None`, so all valves are synced on startup (about 13 s).
+- **One process, shared state.** HTTP handler threads, the monitor and the queue share state. `override_list`/config changes hold `monitor.lock`. Queue state is guarded by `queue.cond`.
+- **All drives go through `DriveQueue`.** `check()` ORs the active schedule entries and overrides into `req_state`, and `change_valves()` calls `queue.request()` for valves that differ from `queue.target`. The queue spaces power pulses by the 10 s capacitor charge time, measured from the last pulse, so it waits only when needed. `target` starts as `None`, so all valves are synced on startup (about 35 s). `/api/state` reports `valves` (actual), `targets` and `queue`.
 - **Overrides are in memory only** and are lost on restart. Names and the schedule persist in the JSON config.
 - **Time model:** 1=Sunday … 7=Saturday (0 = every day). Seconds since local midnight. Nothing wraps past midnight.
 - The raw port test endpoints bypass the monitor. The monitor turns the ports off again the next time it drives that valve.

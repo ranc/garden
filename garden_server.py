@@ -7,6 +7,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 import garden_config
+from drive_queue import DriveQueue
 from web_server import WebServer
 
 if os.name == 'nt':
@@ -36,27 +37,17 @@ static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "website")
     so: 0,1 -> solenoid 1 | 2,3 -> solenoid 2 | 4,5 -> solenoid 3 | 6,7 -> solenoid 4
 
     For Example, to open solenoid 2:
-        1. turn on port 3 (direction: open)
-        2. wait a moment for the direction relay to settle
-        3. turn on port 2 (power) for change_drive_time seconds, then turn it off
+        1. wait for the drive capacitor to charge
+        2. turn on port 3 (direction: open), wait 150ms for the relay to settle
+        3. pulse port 2 (power), then turn it off
         4. turn off port 3 to save power
-    only solenoids whose state changed are driven, one after the other.
+    the monitor only requests valve states, drive_queue.DriveQueue executes the drives one at a time.
 '''
 
 NUM_VALVES = 4
 NUM_PORTS = 2 * NUM_VALVES
 MAX_OVERRIDE_SEC = 3 * 3600
 MAX_PULSE_SEC = 10
-change_drive_time = 3 # time it takes to change the valve
-relay_settle_time = 0.1 # time for the direction relay to settle before/after power
-
-
-def power_port(valve: int) -> int:
-    return 2 * (valve - 1)
-
-
-def direction_port(valve: int) -> int:
-    return 2 * (valve - 1) + 1
 
 
 class ValveSchedData:
@@ -94,19 +85,18 @@ class ValveOverrideData:
 
 
 class ValveMonitor(threading.Thread):
-    valves_state: List[Optional[bool]]
     schedule: List[ValveSchedData]
     override_list: List[ValveOverrideData]
 
-    def __init__(self) -> None:
+    def __init__(self, queue: DriveQueue) -> None:
         super().__init__(name="monitor")
+        self.queue = queue
         self.logger = logging.getLogger('monitor')
         self.lock = threading.Lock() # guards override_list and config changes, taken by the web threads too
         self.schedule = []
         self.override_list = []
         self.config_path = config_path
-        # 0 is dummy, None means unknown: the first check drives every valve to its required state
-        self.valves_state = [None]*(NUM_VALVES+1)
+        self.stopped_valves = set() # manual runs cancelled from the UI, for the drive reason
         self.keepalive_count = 0
         self.last_live_time = time.perf_counter()
         self.init_config()
@@ -182,6 +172,7 @@ class ValveMonitor(threading.Thread):
     def cancel_override(self, valve: int) -> str:
         with self.lock:
             self.override_list = [ov for ov in self.override_list if ov.valve_no!=valve]
+            self.stopped_valves.add(valve)
         return f"Manual run of valve {valve} stopped"
 
     @staticmethod
@@ -206,39 +197,32 @@ class ValveMonitor(threading.Thread):
             if sched.check_if_on(my_week_day, sec_since_midnight):
                 req_state[sched.valve_no] = True
 
+        manual = set()
         with self.lock:
             next_list = []
             for override in self.override_list:
                 if override.check_if_on(sec_since_midnight):
                     req_state[override.valve_no] = True
+                    manual.add(override.valve_no)
                     next_list.append(override)
             self.override_list = next_list # we do not want to keep overrides once they are done.
+            stopped, self.stopped_valves = self.stopped_valves, set()
 
-        self.change_valves(req_state)
+        self.change_valves(req_state, manual, stopped)
 
-    def change_valves(self, req_state: List[bool]):
-        '''
-         drive only the valves whose state changed, one after the other
-        '''
+    def change_valves(self, req_state: List[bool], manual: set, stopped: set):
+        # request only the valves whose state changed, the drive queue times the actual drives
         for v in range(1, NUM_VALVES+1):
-            if req_state[v] == self.valves_state[v]:
+            target = self.queue.target[v]
+            if req_state[v] == target:
                 continue
-            self.drive_valve(v, req_state[v])
-            self.valves_state[v] = req_state[v]
-
-    def drive_valve(self, valve: int, is_open: bool):
-        pwr, drc = power_port(valve), direction_port(valve)
-        self.logger.info(f"Driving valve {valve} to {'open' if is_open else 'close'}")
-        turn(pwr, False) # never switch direction while powered
-        turn(drc, is_open)
-        time.sleep(relay_settle_time)
-        try:
-            turn(pwr, True)
-            time.sleep(change_drive_time)
-        finally:
-            turn(pwr, False)
-            time.sleep(relay_settle_time)
-            turn(drc, False)
+            if target is None:
+                reason = "startup sync"
+            elif req_state[v]:
+                reason = "manual" if v in manual else "schedule"
+            else:
+                reason = "manual stop" if v in stopped else "watering done"
+            self.queue.request(v, req_state[v], reason)
 
 
 def as_int(body: dict, key: str) -> int:
@@ -254,21 +238,30 @@ def check_port(port: int) -> int:
     return port
 
 
-def port_cmd(body: dict) -> str:
+def port_cmd(queue: DriveQueue, body: dict) -> str:
     # {"port": n, "action": "on" | "off" | "pulse", "sec": pulse length (default 1)}
     port = check_port(as_int(body, "port"))
     action = body.get("action")
-    if action in ("on", "off"):
-        turn(port, action == "on")
-        return f"Port {port} {action}"
+    is_power = port % 2 == 0
+    sec = float(body.get("sec", 1))
+    if action == "pulse" and (sec<=0 or sec>MAX_PULSE_SEC):
+        raise ValueError(f"pulse must be up to {MAX_PULSE_SEC} sec, got: {sec}")
+    if action == "pulse" and is_power:
+        # power pulses use the capacitor, so they wait their turn in the drive queue
+        queue.pulse_port(port, sec)
+        return f"Pulse of port {port} queued"
+    if action not in ("on", "off", "pulse"):
+        raise ValueError(f"action must be on, off or pulse, got: {action}")
+    if queue.busy():
+        raise ValueError("A valve drive is in progress, wait for the queue to finish")
     if action == "pulse":
-        sec = float(body.get("sec", 1))
-        if sec<=0 or sec>MAX_PULSE_SEC:
-            raise ValueError(f"pulse must be up to {MAX_PULSE_SEC} sec, got: {sec}")
         turn(port, True)
         threading.Timer(sec, turn, (port, False)).start()
         return f"Port {port} pulsed for {sec:g} sec"
-    raise ValueError(f"action must be on, off or pulse, got: {action}")
+    turn(port, action == "on")
+    if is_power:
+        queue.note_discharge()
+    return f"Port {port} {action}"
 
 
 def all_off() -> str:
@@ -277,8 +270,9 @@ def all_off() -> str:
     return "All ports are off"
 
 
-def get_state(monitor: ValveMonitor) -> dict:
+def get_state(monitor: ValveMonitor, queue: DriveQueue) -> dict:
     tick_age, ticks = monitor.status()
+    queue_status = queue.status()
     return {
         "now": time.strftime("%a %d %b %H:%M:%S"),
         "num_valves": NUM_VALVES,
@@ -287,7 +281,9 @@ def get_state(monitor: ValveMonitor) -> dict:
         "monitor": {"tick_age": round(tick_age, 1), "ticks": ticks, "alive": monitor.is_alive()},
         "config": monitor.config,
         "overrides": monitor.get_ovl(),
-        "valves": monitor.valves_state[1:],
+        "valves": queue_status.pop("actual"),
+        "targets": queue_status.pop("target"),
+        "queue": queue_status,
         "ports": [get(p) for p in range(NUM_PORTS)],
     }
 
@@ -305,16 +301,18 @@ def main():
     set_logging()
     for g in range(NUM_PORTS):
         setup(g)
-    monitor = ValveMonitor()
+    queue = DriveQueue(NUM_VALVES, turn)
+    queue.start()
+    monitor = ValveMonitor(queue)
     monitor.start()
 
     get_routes = {
-        'state': lambda: get_state(monitor),
+        'state': lambda: get_state(monitor, queue),
     }
     post_routes = {
         'override': lambda b: monitor.add_override(as_int(b, "valve"), as_int(b, "sec")),
         'cancel': lambda b: monitor.cancel_override(as_int(b, "valve")),
-        'port': port_cmd,
+        'port': lambda b: port_cmd(queue, b),
         'alloff': lambda b: all_off(),
         'valve': lambda b: monitor.update_valve(as_int(b, "valve"), b),
     }
@@ -328,7 +326,8 @@ def main():
         pass
     finally:
         srv.server_close()
-        monitor.stop() # waits for a valve drive in progress to finish
+        monitor.stop()
+        queue.stop() # finishes a pulse in progress, drops the rest
         all_off()
         logging.getLogger('web').info("Stopped")
 

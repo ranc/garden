@@ -44,13 +44,13 @@ wday, sec = get_week_time()          # wday 1=Sun..7=Sat, sec since local midnig
 req_state = [False]*(NUM_VALVES+1)   # index 0 unused
 for sched in schedule: if sched.check_if_on(wday, sec): req_state[v] = True
 for ov in overrides:   if ov.check_if_on(sec): req_state[v] = True; keep it   # expired ones are dropped
-change_valves(req_state)             # drives only valves that differ from valves_state
+change_valves(req_state, ...)        # queue.request() for valves that differ from queue.target
 ```
 
 - A valve is open if **any** of its schedule entries or overrides is active (OR).
 - `ValveSchedData.check_if_on`: the day matches (or `sched_day == 0`) and `start <= sec <= start + duration`, inclusive at both ends.
 - `ValveOverrideData`: `start_time` is fixed when the override is created, and it's active while `start <= sec <= start + duration`.
-- `valves_state` starts as `None`, so the first tick drives every valve to its required state (startup sync).
+- `queue.target` starts as `None`, so the first tick requests every valve's required state (startup sync). The drives are timed by `DriveQueue` (see `garden-gpio-wiring`), so a valve opens immediately if the queue is idle, or about 11.25 s later per drive ahead of it.
 
 ### Remaining limitations
 
@@ -58,4 +58,4 @@ change_valves(req_state)             # drives only valves that differ from valve
 2. An override created shortly before midnight ends at midnight.
 3. Schedule windows don't wrap past midnight (a 23:30 + 1 h entry stops at 23:59:59).
 
-Keep the edge-triggered design (`change_valves()` only drives changed valves). Each drive blocks the monitor thread for about 3.2 s.
+Keep the edge-triggered design (`change_valves()` only requests changed valves). The monitor never drives hardware itself.

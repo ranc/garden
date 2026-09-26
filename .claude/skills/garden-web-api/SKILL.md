@@ -22,15 +22,15 @@ description: Reference for the garden HTTP server (web_server.py) — the JSON A
 
 | Method & path | Body | Result |
 |---|---|---|
-| `GET /api/state` | none | `{now, num_valves, gpio_map, config_path, monitor:{tick_age, ticks, alive}, config:{valves:[{id, name, schedule:[{days, start, duration}]}]}, overrides:[{valve_no, start_time, duration, left}], valves:[4 × bool/null], ports:[8 × bool/null]}` |
+| `GET /api/state` | none | `{now, num_valves, gpio_map, config_path, monitor:{tick_age, ticks, alive}, config:{valves:[{id, name, schedule:[{days, start, duration}]}]}, overrides:[{valve_no, start_time, duration, left}], valves:[4 × bool/null] (actual), targets:[4 × bool/null] (requested), queue:{capacitor:{volts, required, supply, ready, ready_in}, charge_time, current:{kind, valve, open, port, reason, phase, eta, ready_in?}, pending:[{…, eta}], history:[{…, finished}]}, ports:[8 × bool/null]}` |
 | `POST /api/override` | `{"valve": 1-4, "sec": 1-10800}` | Starts a manual run (`ValveMonitor.add_override`). |
 | `POST /api/cancel` | `{"valve": n}` | Removes that valve's manual runs. |
 | `POST /api/valve` | `{"valve": n, "name": str, "schedule": [{"days": [1-7], "start": "HH:MM", "duration": sec}]}` | Replaces that valve's name and full schedule, then saves the config file (`ValveMonitor.update_valve`). Validation errors are 400 with a message suitable for the UI. See `garden-schedule`. |
-| `POST /api/port` | `{"port": 0-7, "action": "on"\|"off"\|"pulse", "sec": ≤10}` | Raw port test that bypasses the monitor. `pulse` turns the port off again with a `threading.Timer` (default 1 s). |
+| `POST /api/port` | `{"port": 0-7, "action": "on"\|"off"\|"pulse", "sec": ≤10}` | Raw port test. A `pulse` on a power (even) port is **queued** in the drive queue, because it uses the capacitor. `on`/`off`, and pulses on direction ports, happen immediately but are refused (400) while the queue is busy. |
 | `POST /api/alloff` | `{}` | Turns all 8 ports off. |
 
-- `valves` is the software state (`null` = not driven since startup). `ports` is read back from GPIO (True = relay on / pin low, `null` = not exported).
-- `monitor.tick_age` is normally under 1 s, and up to about 13 s during the startup sync. `alive` is false if the monitor thread died.
+- `valves` is the actual driven state and `targets` is the requested state (`null` = unknown since startup). They differ while a drive is queued or running. `queue.current.phase` is one of `charging` / `selecting` / `pulsing` / `releasing`. ETAs are seconds until each command is expected to finish. `ports` is read back from GPIO (True = relay on / pin low, `null` = not exported).
+- `monitor.tick_age` stays under about 1 s, because drives run on the queue thread. `alive` is false if the monitor thread died.
 
 curl examples:
 ```
@@ -42,7 +42,8 @@ curl -X POST -H 'Content-Type: application/json' -d '{"valve":2,"sec":300}' http
 
 A single static page. There's no build step and no external libraries.
 - Tabs switch by URL hash: `#schedule`, `#manual`, `#setup`, `#test`. Valve names come from `state.config`, through the `valveName(v)`/`valveTitle(v)` helpers, and are shown on every tab.
-- It polls `/api/state` every 2 s (every 30 s when the tab is hidden) and re-renders from JSON. Actions call `post(api, body, button)`, which shows a toast with `message`/`error` and refreshes.
+- It polls `/api/state` every 2 s, every 1 s while the queue is busy or the capacitor is charging, and every 30 s when the tab is hidden. and re-renders from JSON. Actions call `post(api, body, button)`, which shows a toast with `message`/`error` and refreshes.
+  - **Activity panel** (above the tabs, on every page): the current drive with its phase, a charge countdown and the reason; a capacitor bar (`volts / supply`, with a marker at `required`); the pending queue with ETAs; and a collapsible "Recent drives" list. It gets a blue outline while busy. On the Manual tab, a valve whose target differs from its actual state shows a blinking "Opening…"/"Closing…" badge.
   - **Schedule**: one row per config entry (valve, days, start, duration). It's read-only and links to Setup.
   - **Setup**: a valve sidebar (a vertical list at ≥640 px, a horizontally scrolling chip row on phones), plus an editor for the name and watering times. Each time has 7 day toggles and "Every day", a start `<input type=time>`, a minutes field and remove. Edits go into a local `draft` (days always explicit 1..7, minutes rather than seconds). `isDirty()` compares it against `saved`. Save posts `/api/valve` and reloads the draft from the new state. Revert, a confirm before switching valves with unsaved changes, and a `beforeunload` warning protect edits. Validation messages update in place (`entryProblem`), and the polling never rebuilds the editor while it's dirty or focused. Changes saved elsewhere are picked up when the editor is idle.
   - **Manual**: one card per valve with its Open/Closed badge, remaining time and Stop for an active run, 1/5/10/30 min presets, and a custom minutes field. The tab isn't re-rendered while that field has focus.

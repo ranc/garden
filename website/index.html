@@ -135,6 +135,29 @@ button.add { width: 100%; border-style: dashed; margin-bottom: 14px; }
 .save-bar button { min-width: 110px; }
 .empty { text-align: center; padding: 12px; }
 
+/* activity panel: drive queue + capacitor, shown on every tab */
+.activity { padding: 12px 14px; }
+.activity.busy { border-color: var(--on); box-shadow: 0 0 0 3px var(--on-soft); }
+.act-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.act-now { font-weight: 600; flex: 1 1 200px; min-width: 0; }
+.act-now .phase { font-weight: 400; color: var(--muted); }
+.cap { display: flex; align-items: center; gap: 8px; font-size: .82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cap-bar { position: relative; width: 90px; height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; }
+.cap-fill { position: absolute; inset: 0 auto 0 0; background: var(--warn-line); transition: width .8s linear; }
+.cap-fill.ready { background: var(--accent); }
+.cap-mark { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--text); opacity: .5; }
+.act-queue { margin: 10px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.act-queue li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; font-size: .9rem; border-bottom: 1px solid var(--line); }
+.act-queue li:last-child { border-bottom: 0; }
+.act-queue .n { color: var(--muted); margin-right: 6px; }
+.act-history { margin-top: 8px; font-size: .88rem; }
+.act-history summary { cursor: pointer; color: var(--muted); }
+.act-history ul { margin: 6px 0 0; padding-left: 18px; }
+.act-history li { padding: 2px 0; }
+.badge.pending { background: var(--on-soft); color: var(--on); animation: blink 1.2s ease-in-out infinite; }
+@keyframes blink { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .badge.pending { animation: none; } .cap-fill { transition: none; } }
+
 #toast {
   position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: calc(100% - 32px);
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px;
@@ -161,6 +184,17 @@ button.add { width: 100%; border-style: dashed; margin-bottom: 14px; }
 <main>
   <div class="error" id="offline" hidden><strong>Garden server is not responding.</strong> Retrying…</div>
   <div class="error" id="monitor-dead" hidden><strong>The valve scheduler has stopped.</strong> Check garden.log and restart the service.</div>
+  <div class="card activity" id="activity" aria-live="polite">
+    <div class="act-top">
+      <div class="act-now" id="act-now">…</div>
+      <div class="cap" title="Drive capacitor charge">
+        <div class="cap-bar"><div class="cap-fill" id="cap-fill"></div><div class="cap-mark" id="cap-mark"></div></div>
+        <span id="cap-text"></span>
+      </div>
+    </div>
+    <ol class="act-queue" id="act-queue" hidden></ol>
+    <details class="act-history" id="act-history" hidden><summary>Recent drives</summary><ul id="act-history-list"></ul></details>
+  </div>
 
   <section id="schedule">
     <h2>Watering schedule</h2>
@@ -198,8 +232,8 @@ button.add { width: 100%; border-style: dashed; margin-bottom: 14px; }
     <h2>GPIO port test</h2>
     <div class="warn">
       <strong>For testing only.</strong> These buttons switch raw relay ports and bypass the scheduler.
-      Don't leave a <em>power</em> port on: the solenoid coil is meant for short pulses. Use <em>Pulse 1s</em> for power ports.
-      The scheduler turns ports off whenever it drives a valve.
+      <em>Pulse 1s</em> on a power port waits its turn in the drive queue for the capacitor to charge.
+      On/Off are refused while a valve drive is in progress. Don't leave a power port on.
     </div>
     <button class="danger" data-api="alloff">All ports off</button>
     <div id="test-body"></div>
@@ -253,7 +287,9 @@ function valveTitle(v) {
          (name ? `<span class="sub-name">Valve ${v}</span>` : "") + `</span>`;
 }
 
-function badge(v) {
+function badge(v, target) {
+  if (target !== undefined && target !== null && target !== v)
+    return `<span class="badge pending">${target ? "Opening…" : "Closing…"}</span>`;
   if (v === true) return '<span class="badge on">Open</span>';
   if (v === false) return '<span class="badge off">Closed</span>';
   return '<span class="badge unknown">Unknown</span>';
@@ -283,7 +319,7 @@ function renderManual(s) {
   for (const ov of s.overrides) left[ov.valve_no] = Math.max(left[ov.valve_no] || 0, ov.left);
   let html = "";
   for (let v = 1; v <= s.num_valves; v++) {
-    html += `<div class="card"><div class="card-head"><h3 class="valve-title">${valveTitle(v)}</h3>${badge(s.valves[v - 1])}</div>`;
+    html += `<div class="card"><div class="card-head"><h3 class="valve-title">${valveTitle(v)}</h3>${badge(s.valves[v - 1], s.targets[v - 1])}</div>`;
     if (v in left) {
       html += `<div class="running"><span>Manual run · <strong>${durationStr(left[v])}</strong> left</span>` +
               `<button class="ghost-danger" data-api="cancel" data-valve="${v}">Stop</button></div>`;
@@ -451,7 +487,48 @@ $("entries").addEventListener("input", (e) => {
 window.addEventListener("beforeunload", (e) => { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } });
 
 // ---------- render all ----------
+// ---------- activity (drive queue) ----------
+const PHASES = { charging: "charging capacitor", selecting: "setting direction", pulsing: "pulsing solenoid", releasing: "releasing relays" };
+
+function cmdText(c, running) {
+  if (c.kind === "pulse") return `Test pulse, port ${c.port}`;
+  const verb = running ? (c.open ? "Opening" : "Closing") : (c.open ? "Open" : "Close");
+  return `${verb} ${esc(valveName(c.valve))}`;
+}
+
+function secs(n) { return n < 1 ? "<1 s" : `${Math.round(n)} s`; }
+
+function renderActivity(s) {
+  const q = s.queue, cap = q.capacitor, c = q.current;
+  const busy = !!c || q.pending.length > 0;
+  $("activity").classList.toggle("busy", busy);
+
+  if (c) {
+    const wait = c.phase === "charging" ? `, ready in ${secs(c.ready_in)}` : "";
+    $("act-now").innerHTML = `${cmdText(c, true)} <span class="phase">· ${PHASES[c.phase] || c.phase}${wait} · ${esc(c.reason)}</span>`;
+  } else {
+    $("act-now").innerHTML = q.pending.length ? "Starting…" : `Idle <span class="phase">· all valves in position</span>`;
+  }
+
+  const pct = Math.min(100, 100 * cap.volts / cap.supply);
+  $("cap-fill").style.width = pct + "%";
+  $("cap-fill").classList.toggle("ready", cap.ready);
+  $("cap-mark").style.left = (100 * cap.required / cap.supply) + "%";
+  $("cap-text").textContent = `${cap.volts.toFixed(1)} V · ` + (cap.ready ? "ready" : `charging ${secs(cap.ready_in)}`);
+
+  $("act-queue").hidden = q.pending.length === 0;
+  $("act-queue").innerHTML = q.pending.map((p, i) =>
+    `<li><span><span class="n">${i + 1}.</span>${cmdText(p)} <span class="muted">· ${esc(p.reason)}</span></span>` +
+    `<span class="muted">~${secs(p.eta)}</span></li>`).join("");
+
+  $("act-history").hidden = q.history.length === 0;
+  $("act-history-list").innerHTML = q.history.map((h) =>
+    `<li>${esc(h.finished)} · ${h.kind === "pulse" ? `Test pulse, port ${h.port}` :
+      `${h.open ? "Opened" : "Closed"} ${esc(valveName(h.valve))}`} <span class="muted">· ${esc(h.reason)}</span></li>`).join("");
+}
+
 function render(s) {
+  renderActivity(s);
   $("clock").textContent = s.now;
   $("monitor-dead").hidden = s.monitor.alive;
   renderSchedule(s);
@@ -481,7 +558,9 @@ async function refresh() {
   } catch (e) {
     $("offline").hidden = false;
   }
-  refreshTimer = setTimeout(refresh, document.hidden ? 30000 : 2000);
+  // poll faster while the queue is working or the capacitor is charging, so the feedback stays live
+  const active = state && (state.queue.current || state.queue.pending.length || !state.queue.capacitor.ready);
+  refreshTimer = setTimeout(refresh, document.hidden ? 30000 : active ? 1000 : 2000);
 }
 
 // returns true on success
