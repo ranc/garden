@@ -6,15 +6,18 @@ import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
+import garden_config
 from web_server import WebServer
 
 if os.name == 'nt':
     from gpio_nt import turn, setup, get, gpio_map
-    cfg_path = "test.cfg"
+    config_path = "test_config.json"
+    legacy_cfg_path = "test.cfg"
     http_port = 8080
 else:
     from gpio_linux import turn, setup, get, gpio_map
-    cfg_path = "/home/pi/garden_sched.cfg"
+    config_path = "/home/pi/garden_config.json"
+    legacy_cfg_path = "/home/pi/garden_sched.cfg" # imported once, when config_path doesn't exist yet
     http_port = 80
 http_port = int(os.environ.get("GARDEN_HTTP_PORT", http_port))
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "website")
@@ -62,22 +65,11 @@ class ValveSchedData:
     start_time: int # seconds since midnight
     duration: int # seconds
 
-    def set_start_time(self, start_time_str: str) -> bool:
-        '''
-            returns false if the format is illegal
-        '''
-        h_m_s = start_time_str.split(':')
-        if len(h_m_s)<2 or len(h_m_s)>3:
-            return False
-        if len(h_m_s)==2:
-            h_m_s.append(0) # assume 0 sec if just HH:mm
-        h,m,s = tuple(int(_) for _ in h_m_s)
-        if h<0 or h>23 or m<0 or m>59 or s<0 or s>59:
-            return False
-        m += h*60
-        s += m*60
-        self.start_time = s
-        return True
+    def __init__(self, valve_no: int, sched_day: int, start_time: int, duration: int) -> None:
+        self.valve_no = valve_no
+        self.sched_day = sched_day
+        self.start_time = start_time
+        self.duration = duration
 
     def check_if_on(self, wday, day_sec) -> bool:
         if self.sched_day > 0 and wday != self.sched_day:
@@ -109,64 +101,60 @@ class ValveMonitor(threading.Thread):
     def __init__(self) -> None:
         super().__init__(name="monitor")
         self.logger = logging.getLogger('monitor')
-        self.lock = threading.Lock() # guards override_list, taken by the web threads too
+        self.lock = threading.Lock() # guards override_list and config changes, taken by the web threads too
         self.schedule = []
         self.override_list = []
-        self.cfg_path = cfg_path
-        self.lastmtime = os.path.getmtime(cfg_path)
+        self.config_path = config_path
         # 0 is dummy, None means unknown: the first check drives every valve to its required state
         self.valves_state = [None]*(NUM_VALVES+1)
         self.keepalive_count = 0
         self.last_live_time = time.perf_counter()
-        self.configure()
+        self.init_config()
         self.work = True
 
+    def init_config(self):
+        if not os.path.exists(self.config_path):
+            if os.path.exists(legacy_cfg_path):
+                config = garden_config.import_legacy_cfg(legacy_cfg_path, NUM_VALVES)
+                self.logger.info(f"Imported schedule from {legacy_cfg_path}")
+            else:
+                config = garden_config.default_config(NUM_VALVES)
+            garden_config.save(self.config_path, config)
+            self.logger.info(f"Created {self.config_path}")
+        self.lastmtime = os.path.getmtime(self.config_path)
+        self.apply_config(garden_config.load(self.config_path, NUM_VALVES))
+
     def configure(self):
-        schedule = []
-        with open(self.cfg_path, "r") as f:
-            row = 0
-            for line in f:
-                row += 1
-                line = line.strip()
-                if len(line)==0:
-                    continue
-                if line[0]=="#":
-                    continue
-                # Structure of config file: <value #> <list(day 0: all days, 1-7 specific day)> <time 24 hours hh:mm or hh:mm:ss> <on duration in seconds>
-                try:
-                    valve, day_list, start_time, duration = line.split()[:4]
-                    ivalve, iduration = int(valve), int(duration)
-                    idays = [int(day) for day in day_list.split(",")]
-                except ValueError:
-                    self.logger.error(f"row {row} is not '<valve> <days> <hh:mm> <sec>': {line}")
-                    continue
-                if ivalve<1 or ivalve>NUM_VALVES:
-                    self.logger.error(f"Got value {valve} but valve must be 1 to {NUM_VALVES} in row {row}")
-                    continue
-                if iduration<1:
-                    self.logger.error(f"duration {duration} is less than 1 sec in row {row}")
-                    continue
-                for iday in idays:
-                    if iday<0 or iday>7:
-                        self.logger.error(f"day {iday} is illegal in row {row}")
-                        continue
-                    sched = ValveSchedData()
-                    sched.valve_no = ivalve
-                    sched.sched_day = iday
-                    sched.duration = iduration
-                    if not sched.set_start_time(start_time):
-                        self.logger.error(f"Start Time {start_time} is illegal in row {row}")
-                        break
-                    schedule.append(sched)
-        self.schedule = schedule
-        self.logger.info(f"Loaded {len(schedule)} schedule entries from {self.cfg_path}")
+        try:
+            config = garden_config.load(self.config_path, NUM_VALVES)
+        except (OSError, ValueError) as e:
+            # a broken hand edit: keep running with the previous schedule
+            self.logger.error(f"Cannot read {self.config_path}, keeping the previous schedule: {e}")
+            return
+        self.apply_config(config)
+
+    def apply_config(self, config: Dict):
+        self.config = config
+        self.schedule = [ValveSchedData(**e) for e in garden_config.expand(config)]
+        self.logger.info(f"Loaded {len(self.schedule)} schedule entries from {self.config_path}")
+
+    def update_valve(self, valve: int, data: Dict) -> str:
+        if valve<1 or valve>NUM_VALVES:
+            raise ValueError(f"valve must be 1-{NUM_VALVES}, got: {valve}")
+        settings = garden_config.normalize_valve(valve, data)
+        with self.lock:
+            config = {"valves": [settings if v["id"]==valve else v for v in self.config["valves"]]}
+            garden_config.save(self.config_path, config)
+            self.lastmtime = os.path.getmtime(self.config_path) # our own write, no need to reload it
+            self.apply_config(config)
+        return f"Saved {settings['name'] or f'valve {valve}'}"
 
     def run(self):
         while self.work:
             self.keepalive_count += 1
             self.last_live_time = time.perf_counter()
             try:
-                lastmtime = os.path.getmtime(self.cfg_path)
+                lastmtime = os.path.getmtime(self.config_path)
                 if lastmtime != self.lastmtime:
                     self.lastmtime = lastmtime
                     self.configure()
@@ -295,9 +283,9 @@ def get_state(monitor: ValveMonitor) -> dict:
         "now": time.strftime("%a %d %b %H:%M:%S"),
         "num_valves": NUM_VALVES,
         "gpio_map": list(gpio_map),
-        "cfg_path": monitor.cfg_path,
+        "config_path": monitor.config_path,
         "monitor": {"tick_age": round(tick_age, 1), "ticks": ticks, "alive": monitor.is_alive()},
-        "schedule": [sched.__dict__ for sched in monitor.schedule],
+        "config": monitor.config,
         "overrides": monitor.get_ovl(),
         "valves": monitor.valves_state[1:],
         "ports": [get(p) for p in range(NUM_PORTS)],
@@ -328,6 +316,7 @@ def main():
         'cancel': lambda b: monitor.cancel_override(as_int(b, "valve")),
         'port': port_cmd,
         'alloff': lambda b: all_off(),
+        'valve': lambda b: monitor.update_valve(as_int(b, "valve"), b),
     }
     srv = WebServer(http_port, static_dir, get_routes, post_routes)
     # systemd stops us with SIGTERM: turn it into a clean exit so no relay is left powered

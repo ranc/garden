@@ -1,33 +1,41 @@
 ---
 name: garden-schedule
-description: Garden watering schedule file format (/home/pi/garden_sched.cfg), validation rules, day/time conventions, and how ValveMonitor combines schedule entries and overrides into valve state every second. Load when writing or reviewing a schedule, editing configure()/check()/ValveSchedData/ValveOverrideData, or debugging "why didn't valve N open".
+description: Garden valve names and watering schedule — the JSON config (/home/pi/garden_config.json) managed by garden_config.py, its validation rules, legacy garden_sched.cfg import, day/time conventions, and how ValveMonitor combines schedule entries and overrides into valve state every second. Load when changing the schedule/config format, garden_config.py, configure()/check()/update_valve(), or debugging "why didn't valve N open".
 ---
 
-# Schedule and override evaluation
+# Valve config, schedule and evaluation
 
-## Schedule file
+## Config file (`garden_config.py`)
 
-Path: `/home/pi/garden_sched.cfg` on the Pi and `test.cfg` on Windows. The daemon polls its mtime every tick and re-parses when it changes, so there's no need to restart.
+The path is `/home/pi/garden_config.json` on the Pi, and `test_config.json` in the repo dir on Windows (gitignored). It's written by the Setup page (`POST /api/valve`) and can also be edited by hand. The monitor polls the file's mtime every tick and reloads it when it changes.
 
-One entry per line: `<valve> <days> <start> <duration_sec> [ignored trailing text]`
-
-- `valve`: integer, validated as 1-7 (the hardware has 4 solenoids, see `garden-gpio-wiring`).
-- `days`: comma list with no spaces. `0` = every day, `1` = Sunday … `7` = Saturday.
-- `start`: `HH:MM` or `HH:MM:SS`, 24-hour, local time.
-- `duration_sec`: **seconds**, at least 1. (The comment in `test.cfg` says "20 min" but the value 20 means 20 s.)
-- Blank lines and lines starting with `#` are skipped. Anything after the 4th token is ignored, so trailing `# comments` work.
-
-Example: valve 2 every Sun/Tue/Thu at 06:00 for 10 min, and valve 1 every day at 19:30 for 5 min:
-```
-2 1,3,5 06:00 600
-1 0 19:30 300
+```json
+{
+  "valves": [
+    {"id": 1, "name": "Front lawn",
+     "schedule": [{"days": [1, 3, 5], "start": "06:00", "duration": 600},
+                  {"days": [0], "start": "19:30", "duration": 300}]},
+    {"id": 2, "name": "", "schedule": []}
+  ]
+}
 ```
 
-### Parsing quirks
+- `days`: 1 = Sunday … 7 = Saturday. `[0]` means every day. Selecting all 7 days is normalized to `[0]`.
+- `start`: `HH:MM` or `HH:MM:SS`, local time.
+- `duration`: seconds, 1 s to 12 h (`MAX_DURATION_SEC`).
+- `name`: up to 40 characters, and may be empty. The UI then shows "Valve N".
+- There are at most 20 entries per valve. Entries are sorted by start time when saved.
 
-- Validation errors are logged at ERROR (`[monitor]`, visible in `garden.log` and journald). An unparseable line, bad valve or bad duration **skips the whole line**. A bad day skips only that day. A bad start time skips the rest of the line.
-- A reload never crashes the monitor: `configure()` builds a new list and swaps it in, and `run()` catches exceptions. The log line `Loaded N schedule entries` confirms each reload.
-- The start time and window aren't checked for overflow. A window that goes past midnight just ends at 23:59:59, and the part after midnight is lost.
+Functions:
+- `normalize_valve(id, data)`: validates one valve and raises `ValueError` with a message the user can read ("watering time 2: pick at least one day"). The API and the loader both use it.
+- `load(path, n)`: always returns all `n` valves. A valve section that fails validation is logged and left empty; the rest still load. Invalid JSON raises, and then `configure()` keeps the previous schedule.
+- `save(path, config)`: atomic (writes `.tmp`, then `os.replace`).
+- `expand(config)`: gives one `{valve_no, sched_day, start_time(sec), duration}` per day, which becomes `ValveSchedData(**e)` for the monitor.
+- `import_legacy_cfg(path, n)`: used **once**. When the JSON file doesn't exist, `ValveMonitor.init_config()` imports `/home/pi/garden_sched.cfg` (old format: `<valve> <days csv> <hh:mm[:ss]> <sec>` per line) if it exists, otherwise it creates an empty config. The old file is never changed or read again.
+
+## Saving from the API (`ValveMonitor.update_valve`)
+
+It validates with `normalize_valve`, replaces that valve's section, `save()`s, sets `lastmtime` to the new mtime (so its own write isn't reloaded), then calls `apply_config()`. All of this happens under `monitor.lock`. `/api/state` returns the whole normalized config as `config`.
 
 ## Evaluation (`ValveMonitor.check`, every 1 s)
 
@@ -40,14 +48,14 @@ change_valves(req_state)             # drives only valves that differ from valve
 ```
 
 - A valve is open if **any** of its schedule entries or overrides is active (OR).
-- `ValveSchedData.check_if_on`: the day matches (or `sched_day == 0`) and `start <= sec <= start + duration`. The window is inclusive at both ends.
-- `ValveOverrideData`: `start_time` is fixed when the override is created (seconds since midnight) and is active while `start <= sec <= start + duration`.
+- `ValveSchedData.check_if_on`: the day matches (or `sched_day == 0`) and `start <= sec <= start + duration`, inclusive at both ends.
+- `ValveOverrideData`: `start_time` is fixed when the override is created, and it's active while `start <= sec <= start + duration`.
 - `valves_state` starts as `None`, so the first tick drives every valve to its required state (startup sync).
 
 ### Remaining limitations
 
 1. **Overrides can't force a valve OFF** during a scheduled window. Stopping a manual run only removes the override.
-2. An override created shortly before midnight ends at midnight: after midnight `sec` is small, so `check_if_on` returns False and the override is dropped.
-3. Schedule windows don't wrap past midnight.
+2. An override created shortly before midnight ends at midnight.
+3. Schedule windows don't wrap past midnight (a 23:30 + 1 h entry stops at 23:59:59).
 
 Keep the edge-triggered design (`change_valves()` only drives changed valves). Each drive blocks the monitor thread for about 3.2 s.

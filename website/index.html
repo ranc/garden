@@ -95,6 +95,46 @@ button.ghost-danger { color: var(--danger); border-color: var(--danger); backgro
   .port .btn-row { grid-column: auto; }
 }
 
+a { color: var(--accent); }
+.valve-title { display: flex; align-items: center; gap: 10px; }
+.valve-title .sub-name { display: block; font-size: .8rem; color: var(--muted); font-weight: 400; }
+td .name { margin-left: 8px; }
+
+/* setup: sidebar of valves + editor; the sidebar becomes a chip row on phones */
+.setup { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.setup > * { min-width: 0; }
+.valve-list { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.valve-list button {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px; text-align: left; font-weight: 600;
+}
+.valve-list button.selected { background: var(--accent); border-color: var(--accent); color: #fff; }
+.valve-list button.selected .valve-num { background: rgba(255,255,255,.25); color: #fff; }
+.valve-list .dot { flex: 0 0 auto; margin-left: auto; }
+@media (min-width: 640px) {
+  .setup { grid-template-columns: 200px minmax(0, 1fr); align-items: start; }
+  .valve-list { flex-direction: column; overflow: visible; position: sticky; top: 120px; }
+  .valve-list button { width: 100%; }
+}
+.field { display: grid; gap: 4px; margin-bottom: 14px; font-size: .88rem; color: var(--muted); font-weight: 600; }
+.field input, .entry input {
+  min-height: 44px; padding: 8px 12px; border-radius: 10px; font: inherit; color: var(--text);
+  border: 1px solid var(--line); background: var(--bg); width: 100%; min-width: 0;
+}
+h3.sub { margin: 6px 0 10px; }
+.entry { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+.days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; margin-bottom: 10px; }
+.days button { min-height: 40px; padding: 4px 0; font-size: .82rem; }
+.days button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.days button.every { grid-column: 1 / -1; }
+.entry-fields { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
+.entry-fields label { display: grid; gap: 4px; font-size: .8rem; color: var(--muted); font-weight: 600; }
+.entry.invalid { border-color: var(--danger); }
+.entry .problem { color: var(--danger); font-size: .85rem; margin-top: 6px; }
+button.add { width: 100%; border-style: dashed; margin-bottom: 14px; }
+.save-bar { display: flex; gap: 8px; justify-content: flex-end; border-top: 1px solid var(--line); padding-top: 12px; }
+.save-bar button { min-width: 110px; }
+.empty { text-align: center; padding: 12px; }
+
 #toast {
   position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: calc(100% - 32px);
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px;
@@ -113,6 +153,7 @@ button.ghost-danger { color: var(--danger); border-color: var(--danger); backgro
   <nav>
     <a href="#schedule" data-tab="schedule">Schedule</a>
     <a href="#manual" data-tab="manual">Manual</a>
+    <a href="#setup" data-tab="setup">Setup</a>
     <a href="#test" data-tab="test">Test</a>
   </nav>
 </header>
@@ -124,13 +165,33 @@ button.ghost-danger { color: var(--danger); border-color: var(--danger); backgro
   <section id="schedule">
     <h2>Watering schedule</h2>
     <div class="card" id="schedule-body"><p class="muted">Loading…</p></div>
-    <p class="muted">Read from <code id="cfg-path">the schedule file</code>. It reloads automatically when the file changes.</p>
+    <p class="muted">Change names and watering times in the <a href="#setup">Setup</a> tab. Saved in <code id="config-path">the config file</code>.</p>
   </section>
 
   <section id="manual">
     <h2>Manual watering</h2>
     <div id="manual-body"></div>
     <p class="muted">A manual run opens the valve for the chosen time on top of the schedule. Stop ends the manual run; a scheduled window still keeps the valve open.</p>
+  </section>
+
+  <section id="setup">
+    <div class="setup">
+      <aside class="valve-list" id="valve-list" aria-label="Valves"></aside>
+      <div class="card setup-pane">
+        <div class="card-head"><h2 id="setup-title">Valve</h2><span class="muted" id="setup-dirty" hidden>Unsaved changes</span></div>
+        <label class="field">
+          <span>Name</span>
+          <input id="valve-name" maxlength="40" autocomplete="off">
+        </label>
+        <h3 class="sub">Watering times</h3>
+        <div id="entries"></div>
+        <button id="add-entry" class="add">+ Add watering time</button>
+        <div class="save-bar">
+          <button id="revert">Revert</button>
+          <button id="save" class="primary">Save</button>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section id="test">
@@ -150,7 +211,7 @@ button.ghost-danger { color: var(--danger); border-color: var(--danger); backgro
 <script>
 "use strict";
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const TABS = ["schedule", "manual", "test"];
+const TABS = ["schedule", "manual", "setup", "test"];
 const $ = (id) => document.getElementById(id);
 let state = null;
 
@@ -173,8 +234,23 @@ function durationStr(sec) {
 }
 
 function daysStr(days) {
-  if (days.includes(0)) return "Every day";
+  if (days.includes(0) || days.length === 7) return "Every day";
   return [...days].sort().map((d) => DAYS[d - 1] || "?").join(", ");
+}
+
+function valveConfig(v) {
+  return state.config.valves.find((c) => c.id === v) || { id: v, name: "", schedule: [] };
+}
+
+function valveName(v) {
+  return valveConfig(v).name || `Valve ${v}`;
+}
+
+// name as title, with "Valve N" underneath when the valve has a custom name
+function valveTitle(v) {
+  const name = valveConfig(v).name;
+  return `<span class="valve-num">${v}</span><span>${esc(name || `Valve ${v}`)}` +
+         (name ? `<span class="sub-name">Valve ${v}</span>` : "") + `</span>`;
 }
 
 function badge(v) {
@@ -189,35 +265,25 @@ function dot(v) {
   return `<span class="dot ${cls}"></span><span class="dot-label">${txt}</span>`;
 }
 
-// ---------- rendering ----------
+// ---------- schedule / manual / test ----------
 function renderSchedule(s) {
-  // group per-day entries back into one row per (valve, start, duration)
-  const rows = new Map();
-  for (const e of s.schedule) {
-    const key = `${e.valve_no}|${e.start_time}|${e.duration}`;
-    if (!rows.has(key)) rows.set(key, { valve: e.valve_no, start: e.start_time, duration: e.duration, days: [] });
-    rows.get(key).days.push(e.sched_day);
-  }
-  const list = [...rows.values()].sort((a, b) => a.valve - b.valve || a.start - b.start);
-  $("cfg-path").textContent = s.cfg_path;
-  $("schedule-body").innerHTML = list.length === 0
-    ? `<p class="muted">No schedule entries. Edit <code>${esc(s.cfg_path)}</code> on the Pi.</p>`
+  const rows = [];
+  for (const valve of s.config.valves)
+    for (const e of valve.schedule) rows.push({ valve: valve.id, ...e });
+  $("config-path").textContent = s.config_path;
+  $("schedule-body").innerHTML = rows.length === 0
+    ? `<p class="muted empty">No watering times yet. Add them in the <a href="#setup">Setup</a> tab.</p>`
     : `<table><tr><th>Valve</th><th>Days</th><th>Start</th><th>Duration</th></tr>` +
-      list.map((r) => `<tr><td><span class="valve-num">${r.valve}</span></td><td>${daysStr(r.days)}</td>` +
-        `<td>${clockStr(r.start)}</td><td>${durationStr(r.duration)}</td></tr>`).join("") + `</table>`;
+      rows.map((r) => `<tr><td><span class="valve-num">${r.valve}</span><span class="name">${esc(valveName(r.valve))}</span></td>` +
+        `<td>${daysStr(r.days)}</td><td>${esc(r.start)}</td><td>${durationStr(r.duration)}</td></tr>`).join("") + `</table>`;
 }
 
 function renderManual(s) {
   const left = {};
   for (const ov of s.overrides) left[ov.valve_no] = Math.max(left[ov.valve_no] || 0, ov.left);
-  // keep a half-typed custom value across refreshes
-  const typed = {};
-  document.querySelectorAll("#manual-body input").forEach((i) => { if (i.value) typed[i.dataset.valve] = i.value; });
-  const focused = document.activeElement && document.activeElement.dataset.valve;
-
   let html = "";
   for (let v = 1; v <= s.num_valves; v++) {
-    html += `<div class="card"><div class="card-head"><h3>Valve ${v}</h3>${badge(s.valves[v - 1])}</div>`;
+    html += `<div class="card"><div class="card-head"><h3 class="valve-title">${valveTitle(v)}</h3>${badge(s.valves[v - 1])}</div>`;
     if (v in left) {
       html += `<div class="running"><span>Manual run · <strong>${durationStr(left[v])}</strong> left</span>` +
               `<button class="ghost-danger" data-api="cancel" data-valve="${v}">Stop</button></div>`;
@@ -226,20 +292,17 @@ function renderManual(s) {
       `<button data-api="override" data-valve="${v}" data-sec="${m * 60}">${m} min</button>`).join("") + `</div>`;
     html += `<form class="custom" data-valve="${v}">` +
       `<input type="number" data-valve="${v}" min="0.1" max="180" step="0.1" inputmode="decimal" ` +
-      `placeholder="Minutes (max 180)" aria-label="Minutes for valve ${v}" value="${esc(typed[v] || "")}" required>` +
+      `placeholder="Minutes (max 180)" aria-label="Minutes for ${esc(valveName(v))}" required>` +
       `<button class="primary">Start</button></form></div>`;
   }
   $("manual-body").innerHTML = html;
-  if (focused) {
-    const input = document.querySelector(`#manual-body input[data-valve="${focused}"]`);
-    if (input) input.focus();
-  }
 }
 
 function renderTest(s) {
   let html = "";
   for (let v = 1; v <= s.num_valves; v++) {
-    html += `<div class="card"><div class="card-head"><h3>Solenoid ${v}</h3></div>`;
+    const name = valveConfig(v).name;
+    html += `<div class="card"><div class="card-head"><h3>Solenoid ${v}${name ? " · " + esc(name) : ""}</h3></div>`;
     for (const [label, p] of [["Power", 2 * (v - 1)], ["Direction (on = open)", 2 * (v - 1) + 1]]) {
       html += `<div class="port"><div><div><strong>${label}</strong></div>` +
         `<div class="muted">Port ${p} · GPIO${s.gpio_map[p]}</div></div>` +
@@ -253,14 +316,156 @@ function renderTest(s) {
   $("test-body").innerHTML = html;
 }
 
+// ---------- setup ----------
+// draft = editable copy of one valve's settings; days are always explicit 1..7 here
+let draft = null;   // {valve, name, schedule: [{days: [..], start: "HH:MM", minutes: n}]}
+let saved = null;   // JSON of the draft as last loaded, to detect unsaved changes
+
+function toDraft(v) {
+  const c = valveConfig(v);
+  return {
+    valve: v, name: c.name,
+    schedule: c.schedule.map((e) => ({
+      days: e.days.includes(0) ? [1, 2, 3, 4, 5, 6, 7] : [...e.days],
+      start: e.start, minutes: +(e.duration / 60).toFixed(2),
+    })),
+  };
+}
+
+function loadDraft(v) {
+  draft = toDraft(v);
+  saved = JSON.stringify(draft);
+  renderSetup();
+}
+
+const isDirty = () => draft !== null && JSON.stringify(draft) !== saved;
+
+function entryProblem(e) {
+  if (e.days.length === 0) return "Pick at least one day";
+  if (!/^\d{2}:\d{2}(:\d{2})?$/.test(e.start)) return "Set a start time";
+  if (!(e.minutes > 0)) return "Set how many minutes";
+  if (e.minutes > 720) return "Up to 12 hours";
+  return "";
+}
+
+function renderValveList() {
+  $("valve-list").innerHTML = state.config.valves.map((c) =>
+    `<button data-select="${c.id}" class="${draft && draft.valve === c.id ? "selected" : ""}">` +
+    `<span class="valve-num">${c.id}</span><span>${esc(c.name || `Valve ${c.id}`)}</span>` +
+    `<span class="dot ${state.valves[c.id - 1] === true ? "on" : "off"}" title="${state.valves[c.id - 1] ? "Open" : "Closed"}"></span></button>`
+  ).join("");
+}
+
+function renderEntries() {
+  $("entries").innerHTML = draft.schedule.length === 0
+    ? `<p class="muted empty">No watering times. This valve only opens manually.</p>`
+    : draft.schedule.map((e, i) => {
+        const every = e.days.length === 7, problem = entryProblem(e);
+        return `<div class="entry${problem ? " invalid" : ""}" data-entry="${i}"><div class="days">` +
+          `<button class="every" data-every aria-pressed="${every}">Every day</button>` +
+          DAYS.map((d, j) => `<button data-day="${j + 1}" aria-pressed="${e.days.includes(j + 1)}">${d}</button>`).join("") +
+          `</div><div class="entry-fields">` +
+          `<label>Start<input type="time" data-field="start" value="${esc(e.start)}" required></label>` +
+          `<label>Minutes<input type="number" data-field="minutes" min="0.1" max="720" step="0.1" inputmode="decimal" value="${e.minutes || ""}"></label>` +
+          `<button class="ghost-danger" data-remove aria-label="Remove watering time">✕</button></div>` +
+          `<div class="problem"${problem ? "" : " hidden"}>${problem}</div></div>`;
+      }).join("");
+}
+
+function updateDirty() {
+  const dirty = isDirty();
+  $("setup-dirty").hidden = !dirty;
+  $("save").disabled = !dirty;
+  $("revert").disabled = !dirty;
+}
+
+function renderSetup() {
+  renderValveList();
+  $("setup-title").textContent = `Valve ${draft.valve}`;
+  $("valve-name").value = draft.name;
+  $("valve-name").placeholder = `Valve ${draft.valve}`;
+  renderEntries();
+  updateDirty();
+}
+
+function selectValve(v) {
+  if (draft && v === draft.valve) return;
+  if (isDirty() && !confirm(`Discard unsaved changes to ${draft.name || "valve " + draft.valve}?`)) return;
+  loadDraft(v);
+}
+
+async function saveDraft() {
+  const bad = draft.schedule.map(entryProblem).find(Boolean);
+  if (bad) { renderEntries(); return toast(bad, true); }
+  const body = {
+    valve: draft.valve, name: draft.name.trim(),
+    schedule: draft.schedule.map((e) => ({ days: e.days, start: e.start, duration: Math.round(e.minutes * 60) })),
+  };
+  $("save").disabled = true;
+  const ok = await post("valve", body);
+  if (ok) {
+    await refresh();
+    loadDraft(draft.valve);
+  } else {
+    updateDirty();
+  }
+}
+
+$("valve-name").addEventListener("input", (e) => { draft.name = e.target.value; updateDirty(); });
+$("add-entry").addEventListener("click", () => {
+  const last = draft.schedule[draft.schedule.length - 1];
+  draft.schedule.push(last ? { ...last, days: [...last.days] } : { days: [1, 2, 3, 4, 5, 6, 7], start: "06:00", minutes: 10 });
+  renderEntries(); updateDirty();
+});
+$("revert").addEventListener("click", () => loadDraft(draft.valve));
+$("save").addEventListener("click", saveDraft);
+$("valve-list").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-select]");
+  if (b) selectValve(+b.dataset.select);
+});
+$("entries").addEventListener("click", (e) => {
+  const b = e.target.closest("button"), row = e.target.closest("[data-entry]");
+  if (!b || !row) return;
+  const entry = draft.schedule[+row.dataset.entry];
+  if (b.hasAttribute("data-remove")) draft.schedule.splice(+row.dataset.entry, 1);
+  else if (b.hasAttribute("data-every")) entry.days = entry.days.length === 7 ? [] : [1, 2, 3, 4, 5, 6, 7];
+  else if (b.dataset.day) {
+    const d = +b.dataset.day;
+    entry.days = entry.days.includes(d) ? entry.days.filter((x) => x !== d) : [...entry.days, d].sort();
+  }
+  renderEntries(); updateDirty();
+});
+$("entries").addEventListener("input", (e) => {
+  const row = e.target.closest("[data-entry]");
+  if (!row) return;
+  const entry = draft.schedule[+row.dataset.entry];
+  if (e.target.dataset.field === "start") entry.start = e.target.value;
+  if (e.target.dataset.field === "minutes") entry.minutes = parseFloat(e.target.value) || 0;
+  // update the validation message in place, rebuilding would steal focus from the input
+  const problem = entryProblem(entry), box = row.querySelector(".problem");
+  row.classList.toggle("invalid", !!problem);
+  box.textContent = problem;
+  box.hidden = !problem;
+  updateDirty();
+});
+window.addEventListener("beforeunload", (e) => { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } });
+
+// ---------- render all ----------
 function render(s) {
   $("clock").textContent = s.now;
   $("monitor-dead").hidden = s.monitor.alive;
   renderSchedule(s);
   // don't rebuild the manual tab while the user is typing a custom duration
-  const typing = document.activeElement && document.activeElement.matches("#manual-body input");
-  if (!typing) renderManual(s);
+  if (!(document.activeElement && document.activeElement.matches("#manual-body input"))) renderManual(s);
   renderTest(s);
+  if (draft === null) {
+    loadDraft(1);
+  } else {
+    renderValveList();
+    // pick up changes saved elsewhere (another phone, a hand edit) unless we're editing
+    const editing = isDirty() || (document.activeElement && document.activeElement.closest("#setup .setup-pane"));
+    if (!editing && JSON.stringify(toDraft(draft.valve)) !== saved) loadDraft(draft.valve);
+  }
 }
 
 // ---------- data ----------
@@ -279,6 +484,7 @@ async function refresh() {
   refreshTimer = setTimeout(refresh, document.hidden ? 30000 : 2000);
 }
 
+// returns true on success
 async function post(api, body, button) {
   if (button) button.disabled = true;
   try {
@@ -287,11 +493,13 @@ async function post(api, body, button) {
     });
     const data = await res.json().catch(() => ({ error: "HTTP " + res.status }));
     toast(data.message || data.error, !res.ok);
+    return res.ok;
   } catch (e) {
     toast("Garden server is not reachable", true);
+    return false;
   } finally {
     if (button) button.disabled = false;
-    refresh();
+    if (api !== "valve") refresh();
   }
 }
 
